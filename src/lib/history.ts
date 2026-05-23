@@ -48,6 +48,10 @@ function db(): Database.Database {
     ["roles_json", "ALTER TABLE history ADD COLUMN roles_json TEXT"],
     ["attachments_json", "ALTER TABLE history ADD COLUMN attachments_json TEXT"],
     ["parent_id", "ALTER TABLE history ADD COLUMN parent_id INTEGER"],
+    [
+      "subagent_tree_json",
+      "ALTER TABLE history ADD COLUMN subagent_tree_json TEXT",
+    ],
   ];
   for (const [col, sql] of migrations) {
     if (!cols.has(col)) d.exec(sql);
@@ -85,6 +89,7 @@ export type HistoryEntry = {
   roles: Partial<Record<Provider, RoleId>> | null;
   attachments: AttachmentMeta[] | null;
   parentId: number | null;
+  subagentTree: unknown[] | null;
 };
 
 type SaveInput = {
@@ -100,6 +105,7 @@ type SaveInput = {
   roles?: Partial<Record<Provider, RoleId>> | null;
   attachments?: AttachmentMeta[] | null;
   parentId?: number | null;
+  subagentTree?: unknown[] | null;
 };
 
 export function saveHistory(input: SaveInput): number {
@@ -108,8 +114,9 @@ export function saveHistory(input: SaveInput): number {
       `INSERT INTO history (
          created_at, prompt, answers_json, synth_text, synth_error,
          project_id, cancelled, synthesizer_id, total_latency_ms,
-         ensemble_id, roles_json, attachments_json, parent_id
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         ensemble_id, roles_json, attachments_json, parent_id,
+         subagent_tree_json
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       Date.now(),
@@ -127,6 +134,9 @@ export function saveHistory(input: SaveInput): number {
         ? JSON.stringify(input.attachments)
         : null,
       input.parentId ?? null,
+      input.subagentTree && input.subagentTree.length > 0
+        ? JSON.stringify(input.subagentTree)
+        : null,
     );
   return Number(info.lastInsertRowid);
 }
@@ -146,6 +156,7 @@ type Row = {
   roles_json: string | null;
   attachments_json: string | null;
   parent_id: number | null;
+  subagent_tree_json: string | null;
 };
 
 function toEntry(r: Row): HistoryEntry {
@@ -165,6 +176,14 @@ function toEntry(r: Row): HistoryEntry {
       attachments = null;
     }
   }
+  let subagentTree: unknown[] | null = null;
+  if (r.subagent_tree_json) {
+    try {
+      subagentTree = JSON.parse(r.subagent_tree_json) as unknown[];
+    } catch {
+      subagentTree = null;
+    }
+  }
   return {
     id: r.id,
     createdAt: r.created_at,
@@ -180,12 +199,13 @@ function toEntry(r: Row): HistoryEntry {
     roles,
     attachments,
     parentId: r.parent_id,
+    subagentTree,
   };
 }
 
 const SELECT_COLS = `id, created_at, prompt, answers_json, synth_text, synth_error,
   project_id, cancelled, synthesizer_id, total_latency_ms, ensemble_id, roles_json,
-  attachments_json, parent_id`;
+  attachments_json, parent_id, subagent_tree_json`;
 
 export function listHistory(
   opts: { limit?: number; projectId?: number } = {},

@@ -18,7 +18,25 @@ export type SseEvent =
   | { type: "synth-open" }
   | { type: "synth-delta"; text: string }
   | { type: "synth-done"; latencyMs?: number }
-  | { type: "history-saved"; id: number };
+  | { type: "history-saved"; id: number }
+  | {
+      type: "subagent-plan";
+      nodes: Array<{
+        id: number;
+        text: string;
+        dependsOn: number[];
+        status: string;
+        answer: string;
+        error?: string;
+      }>;
+    }
+  | {
+      type: "subagent-update";
+      id: number;
+      status: string;
+      answer?: string;
+      error?: string;
+    };
 
 export function encodeSse(event: SseEvent): string {
   return `data: ${JSON.stringify(event)}\n\n`;

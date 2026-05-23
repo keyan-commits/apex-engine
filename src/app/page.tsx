@@ -8,6 +8,7 @@ import { ModelPanel, type PanelState } from "@/components/ModelPanel";
 import { ProjectSelector } from "@/components/ProjectSelector";
 import { Settings } from "@/components/Settings";
 import { StatsChip } from "@/components/StatsChip";
+import { SubagentsPanel } from "@/components/SubagentsPanel";
 import { SynthesizerPanel, type SynthState } from "@/components/SynthesizerPanel";
 import type { HistoryAnswer, HistoryEntry } from "@/lib/history";
 import type { Project } from "@/lib/projects";
@@ -19,6 +20,11 @@ import {
 } from "@/lib/roles";
 import { parseSse, type SseEvent } from "@/lib/sse";
 import {
+  DEFAULT_SYNTH_STYLE,
+  SYNTH_STYLES,
+  type SynthStyleId,
+} from "@/lib/synth-styles";
+import {
   DEFAULT_SYNTHESIZER_ID,
   SYNTHESIZER_OPTIONS,
   findSynthesizer,
@@ -26,9 +32,19 @@ import {
 
 const SYNTHESIZER_PREF_KEY = "apex.synthesizer";
 const SYNTHESIZER_ID_KEY = "apex.synthesizer-id";
+const SYNTH_STYLE_KEY = "apex.synth-style";
 const ENSEMBLE_ID_KEY = "apex.ensemble-id";
 const ECO_MODE_KEY = "apex.eco-mode";
 const ENABLED_PROVIDERS_KEY = "apex.enabled-providers";
+
+export type SubagentDisplayNode = {
+  id: number;
+  text: string;
+  dependsOn: number[];
+  status: string;
+  answer: string;
+  error?: string;
+};
 
 type State = {
   submitting: boolean;
@@ -39,6 +55,7 @@ type State = {
   notice: string | null;
   models: Record<Provider, PanelState>;
   synth: SynthState;
+  subagentNodes: SubagentDisplayNode[] | null;
 };
 
 function initialPanel(): PanelState {
@@ -69,6 +86,7 @@ function initialState(): State {
       gemini: initialPanel(),
     },
     synth: { status: "idle", text: "", error: null, latencyMs: null },
+    subagentNodes: null,
   };
 }
 
@@ -108,6 +126,7 @@ function reducer(state: State, action: Action): State {
         selectedHistoryId: null,
         historyRefreshKey: state.historyRefreshKey,
         activeProject: state.activeProject,
+        subagentNodes: null,
       };
     }
     case "settle":
@@ -174,6 +193,7 @@ function reducer(state: State, action: Action): State {
           error: e.synthError,
           latencyMs: null,
         },
+        subagentNodes: (e.subagentTree as SubagentDisplayNode[] | null) ?? null,
       };
     }
     case "sse": {
@@ -265,6 +285,32 @@ function reducer(state: State, action: Action): State {
               latencyMs: ev.latencyMs ?? null,
             },
           };
+        case "subagent-plan":
+          return {
+            ...state,
+            subagentNodes: ev.nodes.map((n) => ({
+              id: n.id,
+              text: n.text,
+              dependsOn: n.dependsOn,
+              status: n.status,
+              answer: n.answer,
+              error: n.error,
+            })),
+          };
+        case "subagent-update":
+          return {
+            ...state,
+            subagentNodes: (state.subagentNodes ?? []).map((n) =>
+              n.id === ev.id
+                ? {
+                    ...n,
+                    status: ev.status,
+                    answer: ev.answer ?? n.answer,
+                    error: ev.error ?? n.error,
+                  }
+                : n,
+            ),
+          };
       }
     }
   }
@@ -315,6 +361,13 @@ export default function Home() {
     }
   });
   const [continueThreadId, setContinueThreadId] = useState<number | null>(null);
+  const [synthStyleId, setSynthStyleId] = useState<SynthStyleId>(() => {
+    if (typeof window === "undefined") return DEFAULT_SYNTH_STYLE;
+    const stored = window.localStorage.getItem(SYNTH_STYLE_KEY);
+    return stored && stored in SYNTH_STYLES
+      ? (stored as SynthStyleId)
+      : DEFAULT_SYNTH_STYLE;
+  });
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -342,6 +395,10 @@ export default function Home() {
       JSON.stringify(enabledProviders),
     );
   }, [enabledProviders]);
+
+  useEffect(() => {
+    window.localStorage.setItem(SYNTH_STYLE_KEY, synthStyleId);
+  }, [synthStyleId]);
 
   // Abort any in-flight request on unmount.
   useEffect(() => {
@@ -394,6 +451,7 @@ export default function Home() {
         if (parentId != null) fd.set("parentId", String(parentId));
         fd.set("enabled", JSON.stringify(enabledProviders));
         fd.set("ecoMode", String(ecoMode));
+        fd.set("styleId", synthStyleId);
         for (const f of files) fd.append("attachments", f, f.name);
         init.body = fd;
       } else {
@@ -407,6 +465,7 @@ export default function Home() {
           parentId,
           enabled: enabledProviders,
           ecoMode,
+          styleId: synthStyleId,
         });
       }
       const res = await fetch("/api/ask", init);
@@ -557,11 +616,15 @@ export default function Home() {
             </div>
           )}
 
-          <section className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-            {PROVIDERS.map((p) => (
-              <ModelPanel key={p} provider={p} state={state.models[p]} />
-            ))}
-          </section>
+          {state.subagentNodes ? (
+            <SubagentsPanel nodes={state.subagentNodes} />
+          ) : (
+            <section className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+              {PROVIDERS.map((p) => (
+                <ModelPanel key={p} provider={p} state={state.models[p]} />
+              ))}
+            </section>
+          )}
 
           {showSynth && (
             <SynthesizerPanel
@@ -590,6 +653,8 @@ export default function Home() {
         onToggleProvider={(p, enabled) =>
           setEnabledProviders((prev) => ({ ...prev, [p]: enabled }))
         }
+        synthStyleId={synthStyleId}
+        onChangeSynthStyle={setSynthStyleId}
       />
     </div>
   );

@@ -8,6 +8,12 @@ import { PROVIDERS, type Provider } from "@/lib/providers";
 import { getProject } from "@/lib/projects";
 import { findEnsemble } from "@/lib/roles";
 import { encodeSse, type SseEvent } from "@/lib/sse";
+import {
+  decompose,
+  executeSubagents,
+  nodesToBriefing,
+  type SubagentNode,
+} from "@/lib/subagents";
 import { synthesize, type FanOutAnswer } from "@/lib/synthesize";
 
 export const runtime = "nodejs";
@@ -25,6 +31,7 @@ type ParsedBody = {
   enabled: Partial<Record<Provider, boolean>>;
   attachments: AttachmentMeta[];
   ecoMode: boolean;
+  styleId: string | undefined;
 };
 
 async function parseRequest(req: Request): Promise<{ ok: true; body: ParsedBody } | { ok: false; error: string }> {
@@ -81,6 +88,7 @@ async function parseRequest(req: Request): Promise<{ ok: true; body: ParsedBody 
         enabled,
         attachments,
         ecoMode: json("ecoMode") === "true",
+        styleId: json("styleId") ?? undefined,
       },
     };
   }
@@ -104,6 +112,7 @@ async function parseRequest(req: Request): Promise<{ ok: true; body: ParsedBody 
           : {},
       attachments: [],
       ecoMode: body.ecoMode === true,
+      styleId: typeof body.styleId === "string" ? body.styleId : undefined,
     },
   };
 }
@@ -184,14 +193,58 @@ export async function POST(req: Request) {
         { once: true },
       );
 
+      // Sub-agents path: when ensembleId is "decompose", plan → mini fan-outs → final synth.
+      // Falls back silently to standard fan-out if the planner fails.
+      let subagentTree: SubagentNode[] | null = null;
+      let useSubagents = ensemble.id === "decompose";
+      if (useSubagents) {
+        const plan = await decompose(promptWithContext, signal);
+        if (!plan.ok) {
+          log.warn(`planner failed: ${plan.reason}`);
+          send({
+            type: "warning",
+            message: `Sub-agent planner unavailable (${plan.reason}). Answering as a single query.`,
+          });
+          useSubagents = false;
+        } else {
+          subagentTree = plan.nodes;
+          send({
+            type: "subagent-plan",
+            nodes: plan.nodes.map((n) => ({
+              id: n.id,
+              text: n.text,
+              dependsOn: n.dependsOn,
+              status: n.status,
+              answer: n.answer,
+              error: n.error,
+            })),
+          });
+          await executeSubagents(
+            plan.nodes,
+            (node) => {
+              send({
+                type: "subagent-update",
+                id: node.id,
+                status: node.status,
+                answer: node.answer,
+                error: node.error,
+              });
+            },
+            signal,
+          );
+        }
+      }
+
       try {
-        const items = fanOut(promptWithContext, {
-          systemPrompt,
-          signal,
-          roles,
-          attachments: body.attachments,
-          enabled,
-        });
+        const items = useSubagents
+          ? []
+          : fanOut(promptWithContext, {
+              systemPrompt,
+              signal,
+              roles,
+              attachments: body.attachments,
+              enabled,
+            });
         const answerMap = {} as Record<Provider, HistoryAnswer>;
         const providerStart: Partial<Record<Provider, number>> = {};
         const cacheKeyByProvider: Partial<Record<Provider, string>> = {};
@@ -283,14 +336,21 @@ export async function POST(req: Request) {
         let synthError: string | null = null;
 
         if (body.synthesizerEnabled && !signal.aborted) {
-          const synthInput: FanOutAnswer[] = PROVIDERS.filter(
-            (p) => enabled[p] !== false,
-          ).map((p) => ({
-            provider: p,
-            text: answerMap[p].text,
-            error: answerMap[p].error ?? undefined,
-            role: answerMap[p].role ?? null,
-          }));
+          const synthInput: FanOutAnswer[] = useSubagents && subagentTree
+            ? [
+                {
+                  provider: "openai",
+                  text: nodesToBriefing(subagentTree),
+                  error: undefined,
+                  role: null,
+                },
+              ]
+            : PROVIDERS.filter((p) => enabled[p] !== false).map((p) => ({
+                provider: p,
+                text: answerMap[p].text,
+                error: answerMap[p].error ?? undefined,
+                role: answerMap[p].role ?? null,
+              }));
 
           send({ type: "synth-open" });
           synthText = "";
@@ -316,6 +376,7 @@ export async function POST(req: Request) {
                 systemPrompt,
                 synthesizerId: effectiveSynthesizerId,
                 signal,
+                styleId: body.styleId,
               })) {
                 synthText += chunk;
                 send({ type: "synth-delta", text: chunk });
@@ -349,6 +410,7 @@ export async function POST(req: Request) {
             roles: Object.keys(roles).length > 0 ? roles : null,
             attachments: body.attachments.length > 0 ? body.attachments : null,
             parentId: body.parentId,
+            subagentTree: subagentTree ?? null,
           });
           send({ type: "history-saved", id });
         } catch (err) {

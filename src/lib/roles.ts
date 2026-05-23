@@ -10,7 +10,17 @@ export type RoleId =
   | "security"
   | "researcher"
   | "devil"
-  | "teacher";
+  | "teacher"
+  | "lawyer"
+  | "doctor"
+  | "marketer"
+  | "scientist"
+  | "philosopher"
+  | "debater"
+  | "summarizer"
+  | "translator"
+  | "fact-checker"
+  | "copywriter";
 
 export type Role = {
   id: RoleId;
@@ -79,6 +89,66 @@ export const ROLES: Record<RoleId, Role> = {
     suffix:
       "Answer as a clear teacher. Build from first principles with analogies and small examples. Make the answer accessible without dumbing it down.",
   },
+  lawyer: {
+    id: "lawyer",
+    label: "Lawyer",
+    suffix:
+      "Answer as a careful lawyer. Identify the legal/regulatory dimensions, name applicable doctrines or statutes when relevant, and flag risk + obligations. State explicitly that you are not providing legal advice for any specific jurisdiction.",
+  },
+  doctor: {
+    id: "doctor",
+    label: "Doctor",
+    suffix:
+      "Answer as a careful physician-explainer. Cover differential considerations, red flags, and standard-of-care guidance. State explicitly that you are not providing medical advice and recommend seeing a clinician for individual cases.",
+  },
+  marketer: {
+    id: "marketer",
+    label: "Marketer",
+    suffix:
+      "Answer as a senior marketer. Lead with audience, positioning, and a measurable hypothesis. Distinguish what's a brand bet vs. a performance bet.",
+  },
+  scientist: {
+    id: "scientist",
+    label: "Scientist",
+    suffix:
+      "Answer as a scientist. Lead with the testable hypothesis, the mechanism if known, the empirical evidence (with strength of evidence), and what would falsify the claim.",
+  },
+  philosopher: {
+    id: "philosopher",
+    label: "Philosopher",
+    suffix:
+      "Answer as an analytic philosopher. Clarify the concepts, distinguish related questions, name relevant positions and their leading proponents, and articulate the strongest case for each side.",
+  },
+  debater: {
+    id: "debater",
+    label: "Debater",
+    suffix:
+      "Answer as a competitive debater. Steelman both sides with the strongest available arguments and rebuttals. Don't pick a winner; surface the cruxes.",
+  },
+  summarizer: {
+    id: "summarizer",
+    label: "Summarizer",
+    suffix:
+      "Answer as a precise summarizer. Compress to the smallest set of essential bullets that preserve every load-bearing claim. No padding, no preamble.",
+  },
+  translator: {
+    id: "translator",
+    label: "Translator",
+    suffix:
+      "Answer as a careful technical translator. Render the user's content faithfully across language/domain barriers; preserve technical precision over fluency. Flag ambiguities.",
+  },
+  "fact-checker": {
+    id: "fact-checker",
+    label: "Fact-Checker",
+    suffix:
+      "Answer as a fact-checker. For every claim in the question (or in the other models' answers), classify confidence: established / contested / likely / speculation / unknown. Note specific sources where applicable.",
+  },
+  copywriter: {
+    id: "copywriter",
+    label: "Copywriter",
+    suffix:
+      "Answer as a punchy copywriter. Lead with a hook, write tight active sentences, and propose 2-3 short alternative phrasings the user can pick from.",
+  },
 };
 
 export const ROLE_LIST: readonly Role[] = Object.values(ROLES);
@@ -88,7 +158,11 @@ export type EnsembleId =
   | "code-review"
   | "research"
   | "decision"
-  | "brainstorm";
+  | "brainstorm"
+  | "legal"
+  | "medical"
+  | "marketing"
+  | "decompose";
 
 export type Ensemble = {
   id: EnsembleId;
@@ -107,8 +181,7 @@ export const ENSEMBLES: Record<EnsembleId, Ensemble> = {
   "code-review": {
     id: "code-review",
     label: "Code Review",
-    description:
-      "Architect, reviewer, security, tester — four lenses on the same code.",
+    description: "Architect, reviewer, security, tester — four lenses on the same code.",
     assignments: {
       claude: "architect",
       openai: "reviewer",
@@ -119,8 +192,7 @@ export const ENSEMBLES: Record<EnsembleId, Ensemble> = {
   research: {
     id: "research",
     label: "Research",
-    description:
-      "Researcher, analyst, devil's advocate, teacher — diverse depth on an open question.",
+    description: "Researcher, analyst, devil's advocate, teacher — diverse depth on an open question.",
     assignments: {
       claude: "researcher",
       openai: "analyst",
@@ -131,8 +203,7 @@ export const ENSEMBLES: Record<EnsembleId, Ensemble> = {
   decision: {
     id: "decision",
     label: "Decision",
-    description:
-      "Architect, analyst, devil's advocate, PM — make and pressure-test a call.",
+    description: "Architect, analyst, devil's advocate, PM — make and pressure-test a call.",
     assignments: {
       claude: "architect",
       openai: "analyst",
@@ -143,14 +214,56 @@ export const ENSEMBLES: Record<EnsembleId, Ensemble> = {
   brainstorm: {
     id: "brainstorm",
     label: "Brainstorm",
-    description:
-      "Dev, architect, devil's advocate, teacher — generate and stretch ideas.",
+    description: "Dev, architect, devil's advocate, teacher — generate and stretch ideas.",
     assignments: {
       claude: "dev",
       openai: "architect",
       llama: "devil",
       gemini: "teacher",
     },
+  },
+  legal: {
+    id: "legal",
+    label: "Legal",
+    description:
+      "Lawyer, fact-checker, devil's advocate, debater — analyze a legal/regulatory question from four angles. NOT legal advice.",
+    assignments: {
+      claude: "lawyer",
+      openai: "fact-checker",
+      llama: "devil",
+      gemini: "debater",
+    },
+  },
+  medical: {
+    id: "medical",
+    label: "Medical",
+    description:
+      "Doctor, scientist, fact-checker, researcher — review a medical question. NOT medical advice.",
+    assignments: {
+      claude: "doctor",
+      openai: "scientist",
+      llama: "fact-checker",
+      gemini: "researcher",
+    },
+  },
+  marketing: {
+    id: "marketing",
+    label: "Marketing",
+    description:
+      "Marketer, copywriter, devil's advocate, analyst — campaign concepts plus cold critique.",
+    assignments: {
+      claude: "marketer",
+      openai: "copywriter",
+      llama: "devil",
+      gemini: "analyst",
+    },
+  },
+  decompose: {
+    id: "decompose",
+    label: "Decompose",
+    description:
+      "Sub-agents: a planner splits the question into ≤3 sub-questions (depth ≤2), each gets its own mini fan-out, then a final synthesis. Best for multi-part questions.",
+    assignments: {},
   },
 };
 

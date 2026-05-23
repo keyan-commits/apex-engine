@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { TemplatePicker } from "./TemplatePicker";
 
 const MAX_FILES = 5;
 const MAX_BYTES = 10 * 1024 * 1024;
@@ -198,6 +199,10 @@ export function ChatInput({
               if (e.target.files) addFiles(e.target.files);
               e.target.value = "";
             }}
+          />
+          <TemplatePicker
+            disabled={streaming}
+            onPick={(body) => setValue((v) => (v ? `${v}\n\n${body}` : body))}
           />
           <button
             type="button"

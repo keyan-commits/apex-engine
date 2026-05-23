@@ -5,6 +5,7 @@ import { groq } from "@ai-sdk/groq";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { PROVIDER_LABELS, type Provider } from "./providers";
 import { getRole, type RoleId } from "./roles";
+import { findSynthStyle } from "./synth-styles";
 import {
   findSynthesizer,
   type SynthesizerOption,
@@ -21,6 +22,7 @@ export type SynthesizeOptions = {
   synthesizerId?: string;
   systemPrompt?: string;
   signal?: AbortSignal;
+  styleId?: string;
 };
 
 const githubModels = createOpenAICompatible({
@@ -41,7 +43,8 @@ export async function* synthesize(
   }
 
   const config = findSynthesizer(opts.synthesizerId);
-  const synthPrompt = buildSynthPrompt(prompt, valid);
+  const style = findSynthStyle(opts.styleId);
+  const synthPrompt = buildSynthPrompt(prompt, valid, style.suffix);
 
   if (config.provider === "anthropic-agent") {
     yield* synthClaudeAgent(synthPrompt, config.model, opts);
@@ -172,7 +175,11 @@ function labelFor(a: FanOutAnswer): string {
   return role ? `${base} (${role.label})` : base;
 }
 
-function buildSynthPrompt(prompt: string, answers: FanOutAnswer[]): string {
+function buildSynthPrompt(
+  prompt: string,
+  answers: FanOutAnswer[],
+  styleSuffix: string,
+): string {
   const anyRoles = answers.some((a) => a.role);
   const sections = answers
     .map((a) => `### ${labelFor(a)} responded:\n\n${a.text.trim()}`)
@@ -182,7 +189,9 @@ function buildSynthPrompt(prompt: string, answers: FanOutAnswer[]): string {
     ? " Each model was given a distinct role (shown in parentheses); weight perspectives accordingly when they reflect that role's lens."
     : "";
 
-  return `You are a synthesizer. ${answers.length} AI models were asked the same question.${rolePreamble} Your job: produce a single consolidated best answer by drawing on the strongest, most accurate insights from each response. Resolve contradictions. Cite sources by model name only when their views meaningfully differ. Be direct and useful — no preamble about your role.
+  const stylePreamble = styleSuffix ? `\n\n${styleSuffix}` : "";
+
+  return `You are a synthesizer. ${answers.length} AI models were asked the same question.${rolePreamble} Your job: produce a single consolidated best answer by drawing on the strongest, most accurate insights from each response. Resolve contradictions. Cite sources by model name only when their views meaningfully differ. Be direct and useful — no preamble about your role.${stylePreamble}
 
 ## Original question
 

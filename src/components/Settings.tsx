@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { PROVIDERS, PROVIDER_LABELS, type Provider } from "@/lib/providers";
+import { SYNTH_STYLE_LIST, type SynthStyleId } from "@/lib/synth-styles";
 import {
   SYNTHESIZER_OPTIONS,
   findSynthesizer,
@@ -24,6 +25,8 @@ export function Settings({
   onChangeEcoMode,
   enabledProviders,
   onToggleProvider,
+  synthStyleId,
+  onChangeSynthStyle,
 }: {
   open: boolean;
   onClose: () => void;
@@ -33,6 +36,8 @@ export function Settings({
   onChangeEcoMode: (eco: boolean) => void;
   enabledProviders: Record<Provider, boolean>;
   onToggleProvider: (p: Provider, enabled: boolean) => void;
+  synthStyleId: SynthStyleId;
+  onChangeSynthStyle: (id: SynthStyleId) => void;
 }) {
   const [statuses, setStatuses] = useState<HealthStatus[] | null>(null);
   const [checking, setChecking] = useState(false);
@@ -87,6 +92,28 @@ export function Settings({
             <p className="text-[11px] text-neutral-500 mt-1.5 leading-relaxed">
               {current.note}
             </p>
+          </div>
+
+          <div>
+            <label className="text-[10px] uppercase tracking-wide text-neutral-500 block">
+              Synthesizer style
+            </label>
+            <div className="flex flex-wrap gap-1.5 mt-1.5">
+              {SYNTH_STYLE_LIST.map((s) => (
+                <button
+                  key={s.id}
+                  type="button"
+                  onClick={() => onChangeSynthStyle(s.id)}
+                  className={`text-xs px-2.5 py-1 rounded-md transition ${
+                    synthStyleId === s.id
+                      ? "bg-blue-500 text-white"
+                      : "bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 hover:bg-neutral-200 dark:hover:bg-neutral-700"
+                  }`}
+                >
+                  {s.label}
+                </button>
+              ))}
+            </div>
           </div>
 
           <div className="border-t border-neutral-200 dark:border-neutral-800 pt-4">
