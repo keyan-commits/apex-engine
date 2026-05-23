@@ -74,4 +74,4 @@ See `CLAUDE.md` for project conventions and engineering standards.
 
 ## License
 
-No license declared — single-user personal project. Treat as © reserved unless modified.
+MIT — see [LICENSE](LICENSE).
