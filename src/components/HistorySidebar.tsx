@@ -77,7 +77,7 @@ export function HistorySidebar({
           items.map((item) => (
             <div
               key={item.id}
-              className={`group rounded text-xs transition ${
+              className={`group rounded text-xs transition flex items-stretch ${
                 selectedId === item.id
                   ? "bg-neutral-200 dark:bg-neutral-800"
                   : "hover:bg-neutral-200/60 dark:hover:bg-neutral-800/60"
@@ -86,24 +86,22 @@ export function HistorySidebar({
               <button
                 type="button"
                 onClick={() => onLoad(item)}
-                className="w-full text-left p-2 flex items-start gap-2"
+                className="flex-1 min-w-0 text-left p-2"
               >
-                <div className="flex-1 min-w-0">
-                  <div className="text-neutral-900 dark:text-neutral-100 line-clamp-2">
-                    {item.prompt}
-                  </div>
-                  <div className="text-neutral-500 text-[10px] mt-0.5">
-                    {new Date(item.createdAt).toLocaleString()}
-                  </div>
+                <div className="text-neutral-900 dark:text-neutral-100 line-clamp-2">
+                  {item.prompt}
                 </div>
-                <button
-                  type="button"
-                  onClick={(e) => handleDelete(item.id, e)}
-                  className="opacity-0 group-hover:opacity-100 text-neutral-400 hover:text-red-500 transition px-1"
-                  aria-label="Delete"
-                >
-                  ×
-                </button>
+                <div className="text-neutral-500 text-[10px] mt-0.5">
+                  {new Date(item.createdAt).toLocaleString()}
+                </div>
+              </button>
+              <button
+                type="button"
+                onClick={(e) => handleDelete(item.id, e)}
+                className="opacity-0 group-hover:opacity-100 text-neutral-400 hover:text-red-500 transition px-2 self-start py-2"
+                aria-label="Delete"
+              >
+                ×
               </button>
             </div>
           ))

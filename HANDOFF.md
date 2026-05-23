@@ -3,7 +3,9 @@
 > Updated after every completed task. Read this first to resume work in a new session — it captures volatile state that `CLAUDE.md` doesn't (CLAUDE.md is stable architecture; this is "where are we right now").
 
 **Last updated:** 2026-05-24
-**Last action:** Verified Groq catalog before swapping synthesizer (user explicitly asked to stop guessing). Research dispatch fetched live `console.groq.com/docs/models` and `/docs/deprecations`. Both prior picks confirmed decommissioned (`qwen-qwq-32b` 2025-07-14, `deepseek-r1-distill-llama-70b` 2025-10-02). Groq's own migration table for both → `openai/gpt-oss-120b`. Sanity-checked with a real API call (`curl ... model: openai/gpt-oss-120b ... Respond with exactly PONG`) — returned `PONG` cleanly with reasoning in a separate `reasoning` field (so the `stripThinkTags()` wrapper is a no-op for this model — kept anyway as a safety net).
+**Last action:** Fixed Next.js hydration error in `HistorySidebar.tsx` — the delete `<button>` was nested inside the row-load `<button>` (invalid HTML, `button-in-button`). Restructured: outer wrapper is now a `div` with `flex items-stretch`, the load-row button and delete button are siblings inside it. Same UX (hover-reveal delete via `group-hover`), valid HTML. No more hydration warnings.
+
+**Previously:** Verified Groq catalog before swapping synthesizer (user explicitly asked to stop guessing). Research dispatch fetched live `console.groq.com/docs/models` and `/docs/deprecations`. Both prior picks confirmed decommissioned (`qwen-qwq-32b` 2025-07-14, `deepseek-r1-distill-llama-70b` 2025-10-02). Groq's own migration table for both → `openai/gpt-oss-120b`. Sanity-checked with a real API call (`curl ... model: openai/gpt-oss-120b ... Respond with exactly PONG`) — returned `PONG` cleanly with reasoning in a separate `reasoning` field (so the `stripThinkTags()` wrapper is a no-op for this model — kept anyway as a safety net).
 
 **Swap:** `synthesizer-options.ts` updated to current Groq catalog. New options:
 1. `gpt-oss-120b` (Groq, OpenAI open-weights, 131K ctx) — **default**
