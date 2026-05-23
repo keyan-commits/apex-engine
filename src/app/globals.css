@@ -1,0 +1,7 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+body {
+  font-family:
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
