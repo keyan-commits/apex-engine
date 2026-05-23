@@ -3,7 +3,14 @@
 > Updated after every completed task. Read this first to resume work in a new session — it captures volatile state that `CLAUDE.md` doesn't (CLAUDE.md is stable architecture; this is "where are we right now").
 
 **Last updated:** 2026-05-24
-**Last action:** Committed and pushed up-to-date HANDOFF.md to remote (user wants the dev-state log visible in the public repo too). All in-session updates from this session now in `main`.
+**Last action:** Fixed GHSA-qx2v-qp2m-jg93 (postcss XSS via unescaped `</style>` in CSS stringify, moderate) reported by Dependabot. Vulnerable transitive `postcss <8.5.10` came in via `next`. Added a pnpm override in `pnpm-workspace.yaml`:
+
+```yaml
+overrides:
+  postcss: ">=8.5.10"
+```
+
+`pnpm install` deduped (-1 package). Verified clean with `pnpm audit` ("No known vulnerabilities found"), `pnpm type-check`, `pnpm build`.
 
 **Previously:** Repo flipped to **public** at https://github.com/keyan-commits/apex-engine. Audited for secrets — clean: only `.env.example` tracked (empty template), no `.env*`/`data/`/`*.db` ever committed, grep across full commit history found zero matches for `gsk_`, `sk-`, `ghp_`, `github_pat_`, `AIza`, or `Bearer …` patterns.
 

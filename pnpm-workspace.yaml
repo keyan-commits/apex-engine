@@ -2,3 +2,8 @@ allowBuilds:
   sharp: true
   unrs-resolver: true
   better-sqlite3: true
+
+overrides:
+  # GHSA-qx2v-qp2m-jg93 — postcss XSS via unescaped </style> in CSS stringify.
+  # Force all transitive postcss (incl. next's) to patched line.
+  postcss: ">=8.5.10"
