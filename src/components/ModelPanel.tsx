@@ -14,6 +14,7 @@ export type PanelState = {
   error: string | null;
   latencyMs: number | null;
   role: RoleId | null;
+  cached: boolean;
 };
 
 function formatLatency(ms: number | null): string | null {
@@ -36,11 +37,19 @@ export function ModelPanel({
     <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-4 flex flex-col min-h-[300px]">
       <div className="flex items-center justify-between mb-3">
         <div className="min-w-0">
-          <h2 className="text-sm font-semibold flex items-center gap-1.5">
+          <h2 className="text-sm font-semibold flex items-center gap-1.5 flex-wrap">
             {PROVIDER_LABELS[provider]}
             {role && (
               <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300">
                 {role.label}
+              </span>
+            )}
+            {state.cached && (
+              <span
+                className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300"
+                title="Served from response cache"
+              >
+                cached
               </span>
             )}
           </h2>

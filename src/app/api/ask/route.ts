@@ -1,3 +1,4 @@
+import { answersSignature, cacheGet, cacheKey, cachePut } from "@/lib/cache";
 import { fanOut } from "@/lib/engine";
 import { userFacingMessage } from "@/lib/errors";
 import { saveHistory, type HistoryAnswer } from "@/lib/history";
@@ -82,6 +83,7 @@ export async function POST(req: Request) {
         const items = fanOut(prompt, { systemPrompt, signal, roles });
         const answerMap = {} as Record<Provider, HistoryAnswer>;
         const providerStart: Partial<Record<Provider, number>> = {};
+        const cacheKeyByProvider: Partial<Record<Provider, string>> = {};
         for (const item of items) {
           answerMap[item.provider] = {
             text: "",
@@ -91,18 +93,40 @@ export async function POST(req: Request) {
             role: item.role,
           };
           providerStart[item.provider] = Date.now();
+          const key = cacheKey({
+            kind: "fanout",
+            provider: item.provider,
+            model: item.model,
+            prompt,
+            systemPrompt: systemPrompt ?? null,
+            role: item.role ?? null,
+          });
+          cacheKeyByProvider[item.provider] = key;
+          const cached = cacheGet(key);
           send({
             type: "open",
             provider: item.provider,
             tier: item.tier,
             model: item.model,
             role: item.role,
+            cached: cached !== null,
           });
+          if (cached !== null) {
+            answerMap[item.provider].text = cached;
+            answerMap[item.provider].latencyMs = 0;
+          }
         }
 
         await Promise.all(
           items.map(async (item) => {
             const acc = answerMap[item.provider];
+            const key = cacheKeyByProvider[item.provider]!;
+            if (acc.text && acc.latencyMs === 0) {
+              // Cache hit — emit synthetic delta+done.
+              send({ type: "delta", provider: item.provider, text: acc.text });
+              send({ type: "done", provider: item.provider, latencyMs: 0 });
+              return;
+            }
             try {
               for await (const chunk of item.stream) {
                 acc.text += chunk;
@@ -114,6 +138,7 @@ export async function POST(req: Request) {
               }
               const latencyMs = Date.now() - (providerStart[item.provider] ?? Date.now());
               acc.latencyMs = latencyMs;
+              if (acc.text) cachePut(key, acc.text);
               send({ type: "done", provider: item.provider, latencyMs });
             } catch (err) {
               const latencyMs = Date.now() - (providerStart[item.provider] ?? Date.now());
@@ -139,24 +164,42 @@ export async function POST(req: Request) {
           send({ type: "synth-open" });
           synthText = "";
           const synthStart = Date.now();
-          try {
-            for await (const chunk of synthesize(prompt, synthInput, {
-              systemPrompt,
-              synthesizerId,
-              signal,
-            })) {
-              synthText += chunk;
-              send({ type: "synth-delta", text: chunk });
+          const synthKey = cacheKey({
+            kind: "synth",
+            model: synthesizerId ?? "default",
+            prompt,
+            systemPrompt: systemPrompt ?? null,
+            role: null,
+            upstreamSignature: answersSignature(
+              synthInput.map((a) => ({ provider: a.provider, text: a.text })),
+            ),
+          });
+          const cachedSynth = cacheGet(synthKey);
+          if (cachedSynth !== null) {
+            synthText = cachedSynth;
+            send({ type: "synth-delta", text: cachedSynth });
+            send({ type: "synth-done", latencyMs: 0 });
+          } else {
+            try {
+              for await (const chunk of synthesize(prompt, synthInput, {
+                systemPrompt,
+                synthesizerId,
+                signal,
+              })) {
+                synthText += chunk;
+                send({ type: "synth-delta", text: chunk });
+              }
+              if (synthText) cachePut(synthKey, synthText);
+              send({ type: "synth-done", latencyMs: Date.now() - synthStart });
+            } catch (err) {
+              synthError = userFacingMessage(err);
+              synthText = null;
+              send({
+                type: "error",
+                provider: "synthesizer",
+                message: synthError,
+              });
             }
-            send({ type: "synth-done", latencyMs: Date.now() - synthStart });
-          } catch (err) {
-            synthError = userFacingMessage(err);
-            synthText = null;
-            send({
-              type: "error",
-              provider: "synthesizer",
-              message: synthError,
-            });
           }
         }
 

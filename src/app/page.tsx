@@ -7,6 +7,7 @@ import { HistorySidebar } from "@/components/HistorySidebar";
 import { ModelPanel, type PanelState } from "@/components/ModelPanel";
 import { ProjectSelector } from "@/components/ProjectSelector";
 import { Settings } from "@/components/Settings";
+import { StatsChip } from "@/components/StatsChip";
 import { SynthesizerPanel, type SynthState } from "@/components/SynthesizerPanel";
 import type { HistoryAnswer, HistoryEntry } from "@/lib/history";
 import type { Project } from "@/lib/projects";
@@ -47,6 +48,7 @@ function initialPanel(): PanelState {
     error: null,
     latencyMs: null,
     role: null,
+    cached: false,
   };
 }
 
@@ -77,6 +79,7 @@ function answerToPanel(a: HistoryAnswer): PanelState {
     error: a.error,
     latencyMs: a.latencyMs ?? null,
     role: a.role ?? null,
+    cached: false,
   };
 }
 
@@ -89,7 +92,8 @@ type Action =
   | { kind: "load-history"; entry: HistoryEntry }
   | { kind: "history-refresh" }
   | { kind: "set-project"; project: Project | null }
-  | { kind: "dismiss-notice" };
+  | { kind: "dismiss-notice" }
+  | { kind: "set-notice"; notice: string };
 
 function reducer(state: State, action: Action): State {
   switch (action.kind) {
@@ -145,6 +149,8 @@ function reducer(state: State, action: Action): State {
       };
     case "dismiss-notice":
       return { ...state, notice: null };
+    case "set-notice":
+      return { ...state, notice: action.notice };
     case "load-history": {
       const e = action.entry;
       return {
@@ -182,6 +188,7 @@ function reducer(state: State, action: Action): State {
                 tier: ev.tier,
                 model: ev.model,
                 role: ev.role ?? null,
+                cached: ev.cached ?? false,
               },
             },
           };
@@ -355,6 +362,10 @@ export default function Home() {
         dispatch({ kind: "cancel-all" });
       } else {
         console.error(err);
+        dispatch({
+          kind: "set-notice",
+          notice: "Connection interrupted. Click Submit to retry.",
+        });
       }
     } finally {
       if (abortRef.current === controller) abortRef.current = null;
@@ -426,7 +437,8 @@ export default function Home() {
               <EnsemblePicker active={ensembleId} onChange={setEnsembleId} />
             </div>
             <div className="flex items-center gap-3">
-              <p className="text-xs text-neutral-500">
+              <StatsChip refreshKey={state.historyRefreshKey} />
+              <p className="text-xs text-neutral-500 hidden md:block">
                 Multi-LLM fan-out · Mixture of Agents
               </p>
               <button

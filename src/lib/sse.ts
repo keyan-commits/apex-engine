@@ -8,6 +8,7 @@ export type SseEvent =
       tier: Tier;
       model: string;
       role?: RoleId | null;
+      cached?: boolean;
     }
   | { type: "delta"; provider: Provider; text: string }
   | { type: "done"; provider: Provider; latencyMs?: number }
