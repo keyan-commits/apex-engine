@@ -1,5 +1,6 @@
 "use client";
 
+import { CopyButton } from "./CopyButton";
 import { Markdown } from "./Markdown";
 import { StatusBadge, type Status } from "./StatusBadge";
 
@@ -7,7 +8,14 @@ export type SynthState = {
   status: Status;
   text: string;
   error: string | null;
+  latencyMs: number | null;
 };
+
+function formatLatency(ms: number | null): string | null {
+  if (ms == null) return null;
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
+}
 
 export function SynthesizerPanel({
   state,
@@ -20,6 +28,8 @@ export function SynthesizerPanel({
   onResynthesize?: () => void;
   resynthDisabled?: boolean;
 }) {
+  const latency = formatLatency(state.latencyMs);
+  const chars = state.text.length;
   return (
     <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-gradient-to-br from-amber-50 to-white dark:from-amber-950/20 dark:to-neutral-900 p-5">
       <div className="flex items-center justify-between mb-3 gap-3 flex-wrap">
@@ -59,6 +69,16 @@ export function SynthesizerPanel({
           </p>
         )}
       </div>
+      {(state.text || latency) && (
+        <div className="mt-3 pt-2 border-t border-amber-200/50 dark:border-amber-700/30 flex items-center justify-between gap-2 text-[10px] text-neutral-500">
+          <span>
+            {chars > 0 && <>{chars.toLocaleString()} chars</>}
+            {chars > 0 && latency && <> · </>}
+            {latency && <>{latency}</>}
+          </span>
+          {state.text && <CopyButton text={state.text} label="Copy synthesized answer" />}
+        </div>
+      )}
     </div>
   );
 }

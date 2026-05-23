@@ -4,6 +4,7 @@ import { google } from "@ai-sdk/google";
 import { groq } from "@ai-sdk/groq";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { PROVIDER_LABELS, type Provider } from "./providers";
+import { getRole, type RoleId } from "./roles";
 import {
   findSynthesizer,
   type SynthesizerOption,
@@ -13,6 +14,13 @@ export type FanOutAnswer = {
   provider: Provider;
   text: string;
   error?: string;
+  role?: RoleId | null;
+};
+
+export type SynthesizeOptions = {
+  synthesizerId?: string;
+  systemPrompt?: string;
+  signal?: AbortSignal;
 };
 
 const githubModels = createOpenAICompatible({
@@ -24,7 +32,7 @@ const githubModels = createOpenAICompatible({
 export async function* synthesize(
   prompt: string,
   answers: FanOutAnswer[],
-  opts: { synthesizerId?: string; systemPrompt?: string } = {},
+  opts: SynthesizeOptions = {},
 ): AsyncGenerator<string> {
   const valid = answers.filter((a) => !a.error && a.text.trim().length > 0);
   if (valid.length === 0) {
@@ -36,18 +44,20 @@ export async function* synthesize(
   const synthPrompt = buildSynthPrompt(prompt, valid);
 
   if (config.provider === "anthropic-agent") {
-    yield* synthClaudeAgent(synthPrompt, config.model, opts.systemPrompt);
+    yield* synthClaudeAgent(synthPrompt, config.model, opts);
     return;
   }
 
-  yield* stripThinkTags(synthViaAiSdk(synthPrompt, config, opts.systemPrompt));
+  yield* stripThinkTags(synthViaAiSdk(synthPrompt, config, opts));
 }
 
 async function* synthClaudeAgent(
   synthPrompt: string,
   model: string,
-  systemPrompt: string | undefined,
+  opts: SynthesizeOptions,
 ): AsyncGenerator<string> {
+  const systemPrompt = opts.systemPrompt;
+  const signal = opts.signal;
   const result = query({
     prompt: synthPrompt,
     options: {
@@ -65,6 +75,7 @@ async function* synthClaudeAgent(
     },
   });
   for await (const msg of result) {
+    if (signal?.aborted) throwAbort(signal);
     if (msg.type !== "assistant") continue;
     const content = msg.message?.content;
     if (!Array.isArray(content)) continue;
@@ -79,7 +90,7 @@ async function* synthClaudeAgent(
 async function* synthViaAiSdk(
   synthPrompt: string,
   config: SynthesizerOption,
-  systemPrompt: string | undefined,
+  opts: SynthesizeOptions,
 ): AsyncGenerator<string> {
   const m =
     config.provider === "groq"
@@ -88,21 +99,32 @@ async function* synthViaAiSdk(
         ? githubModels(config.model)
         : google(config.model);
 
+  const { systemPrompt, signal } = opts;
   let captured: Error | null = null;
   const result = streamText({
     model: m,
     ...(systemPrompt?.trim() ? { system: systemPrompt } : {}),
     prompt: synthPrompt,
+    ...(signal ? { abortSignal: signal } : {}),
     onError({ error }) {
       captured = error instanceof Error ? error : new Error(String(error));
     },
   });
 
   for await (const chunk of result.textStream) {
+    if (signal?.aborted) throwAbort(signal);
     yield chunk;
   }
 
   if (captured) throw captured;
+}
+
+function throwAbort(signal: AbortSignal): never {
+  const reason = signal.reason;
+  if (reason instanceof Error) throw reason;
+  const e = new Error(typeof reason === "string" ? reason : "Aborted");
+  e.name = "AbortError";
+  throw e;
 }
 
 async function* stripThinkTags(
@@ -144,15 +166,23 @@ async function* stripThinkTags(
   if (!inside && buffer.length > 0) yield buffer;
 }
 
+function labelFor(a: FanOutAnswer): string {
+  const base = PROVIDER_LABELS[a.provider];
+  const role = a.role ? getRole(a.role) : null;
+  return role ? `${base} (${role.label})` : base;
+}
+
 function buildSynthPrompt(prompt: string, answers: FanOutAnswer[]): string {
+  const anyRoles = answers.some((a) => a.role);
   const sections = answers
-    .map(
-      (a) =>
-        `### ${PROVIDER_LABELS[a.provider]} responded:\n\n${a.text.trim()}`,
-    )
+    .map((a) => `### ${labelFor(a)} responded:\n\n${a.text.trim()}`)
     .join("\n\n---\n\n");
 
-  return `You are a synthesizer. ${answers.length} AI models were asked the same question. Your job: produce a single consolidated best answer by drawing on the strongest, most accurate insights from each response. Resolve contradictions. Cite sources by model name only when their views meaningfully differ. Be direct and useful — no preamble about your role.
+  const rolePreamble = anyRoles
+    ? " Each model was given a distinct role (shown in parentheses); weight perspectives accordingly when they reflect that role's lens."
+    : "";
+
+  return `You are a synthesizer. ${answers.length} AI models were asked the same question.${rolePreamble} Your job: produce a single consolidated best answer by drawing on the strongest, most accurate insights from each response. Resolve contradictions. Cite sources by model name only when their views meaningfully differ. Be direct and useful — no preamble about your role.
 
 ## Original question
 

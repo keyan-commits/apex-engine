@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { Provider, Tier } from "./providers";
+import type { RoleId } from "./roles";
 
 const DATA_DIR = join(process.cwd(), "data");
 const DB_PATH = join(DATA_DIR, "apex.db");
@@ -27,16 +28,28 @@ function db(): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_history_created_at ON history(created_at DESC);
   `);
 
-  // Migrate existing DBs that pre-date the project_id column.
-  // SQLite has no IF NOT EXISTS for ADD COLUMN, so probe via PRAGMA.
-  const cols = d.prepare("PRAGMA table_info(history)").all() as {
-    name: string;
-  }[];
-  if (!cols.some((c) => c.name === "project_id")) {
-    d.exec("ALTER TABLE history ADD COLUMN project_id INTEGER");
+  // Probe for columns and add the ones missing. SQLite has no IF NOT EXISTS
+  // for ADD COLUMN, so we list each migration explicitly.
+  const cols = new Set(
+    (d.prepare("PRAGMA table_info(history)").all() as { name: string }[]).map(
+      (c) => c.name,
+    ),
+  );
+  const migrations: Array<[string, string]> = [
+    ["project_id", "ALTER TABLE history ADD COLUMN project_id INTEGER"],
+    ["cancelled", "ALTER TABLE history ADD COLUMN cancelled INTEGER DEFAULT 0"],
+    ["synthesizer_id", "ALTER TABLE history ADD COLUMN synthesizer_id TEXT"],
+    [
+      "total_latency_ms",
+      "ALTER TABLE history ADD COLUMN total_latency_ms INTEGER",
+    ],
+    ["ensemble_id", "ALTER TABLE history ADD COLUMN ensemble_id TEXT"],
+    ["roles_json", "ALTER TABLE history ADD COLUMN roles_json TEXT"],
+  ];
+  for (const [col, sql] of migrations) {
+    if (!cols.has(col)) d.exec(sql);
   }
 
-  // Now the column is guaranteed to exist — safe to create its index.
   d.exec(
     "CREATE INDEX IF NOT EXISTS idx_history_project_id ON history(project_id)",
   );
@@ -50,6 +63,8 @@ export type HistoryAnswer = {
   model: string;
   tier: Tier;
   error: string | null;
+  latencyMs?: number;
+  role?: RoleId | null;
 };
 
 export type HistoryEntry = {
@@ -60,15 +75,34 @@ export type HistoryEntry = {
   synthText: string | null;
   synthError: string | null;
   projectId: number | null;
+  cancelled: boolean;
+  synthesizerId: string | null;
+  totalLatencyMs: number | null;
+  ensembleId: string | null;
+  roles: Partial<Record<Provider, RoleId>> | null;
 };
 
-export function saveHistory(
-  input: Omit<HistoryEntry, "id" | "createdAt">,
-): number {
+type SaveInput = {
+  prompt: string;
+  answers: Record<Provider, HistoryAnswer>;
+  synthText: string | null;
+  synthError: string | null;
+  projectId: number | null;
+  cancelled?: boolean;
+  synthesizerId?: string | null;
+  totalLatencyMs?: number | null;
+  ensembleId?: string | null;
+  roles?: Partial<Record<Provider, RoleId>> | null;
+};
+
+export function saveHistory(input: SaveInput): number {
   const info = db()
     .prepare(
-      `INSERT INTO history (created_at, prompt, answers_json, synth_text, synth_error, project_id)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO history (
+         created_at, prompt, answers_json, synth_text, synth_error,
+         project_id, cancelled, synthesizer_id, total_latency_ms,
+         ensemble_id, roles_json
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       Date.now(),
@@ -77,9 +111,57 @@ export function saveHistory(
       input.synthText,
       input.synthError,
       input.projectId,
+      input.cancelled ? 1 : 0,
+      input.synthesizerId ?? null,
+      input.totalLatencyMs ?? null,
+      input.ensembleId ?? null,
+      input.roles ? JSON.stringify(input.roles) : null,
     );
   return Number(info.lastInsertRowid);
 }
+
+type Row = {
+  id: number;
+  created_at: number;
+  prompt: string;
+  answers_json: string;
+  synth_text: string | null;
+  synth_error: string | null;
+  project_id: number | null;
+  cancelled: number | null;
+  synthesizer_id: string | null;
+  total_latency_ms: number | null;
+  ensemble_id: string | null;
+  roles_json: string | null;
+};
+
+function toEntry(r: Row): HistoryEntry {
+  let roles: Partial<Record<Provider, RoleId>> | null = null;
+  if (r.roles_json) {
+    try {
+      roles = JSON.parse(r.roles_json) as Partial<Record<Provider, RoleId>>;
+    } catch {
+      roles = null;
+    }
+  }
+  return {
+    id: r.id,
+    createdAt: r.created_at,
+    prompt: r.prompt,
+    answers: JSON.parse(r.answers_json) as Record<Provider, HistoryAnswer>,
+    synthText: r.synth_text,
+    synthError: r.synth_error,
+    projectId: r.project_id,
+    cancelled: r.cancelled === 1,
+    synthesizerId: r.synthesizer_id,
+    totalLatencyMs: r.total_latency_ms,
+    ensembleId: r.ensemble_id,
+    roles,
+  };
+}
+
+const SELECT_COLS = `id, created_at, prompt, answers_json, synth_text, synth_error,
+  project_id, cancelled, synthesizer_id, total_latency_ms, ensemble_id, roles_json`;
 
 export function listHistory(
   opts: { limit?: number; projectId?: number } = {},
@@ -90,30 +172,14 @@ export function listHistory(
     projectId !== undefined ? [projectId, limit] : [limit];
   const rows = db()
     .prepare(
-      `SELECT id, created_at, prompt, answers_json, synth_text, synth_error, project_id
+      `SELECT ${SELECT_COLS}
        FROM history ${where}
        ORDER BY created_at DESC
        LIMIT ?`,
     )
-    .all(...params) as Array<{
-    id: number;
-    created_at: number;
-    prompt: string;
-    answers_json: string;
-    synth_text: string | null;
-    synth_error: string | null;
-    project_id: number | null;
-  }>;
+    .all(...params) as Row[];
 
-  return rows.map((r) => ({
-    id: r.id,
-    createdAt: r.created_at,
-    prompt: r.prompt,
-    answers: JSON.parse(r.answers_json) as Record<Provider, HistoryAnswer>,
-    synthText: r.synth_text,
-    synthError: r.synth_error,
-    projectId: r.project_id,
-  }));
+  return rows.map(toEntry);
 }
 
 export function deleteHistoryEntry(id: number): void {
@@ -122,32 +188,9 @@ export function deleteHistoryEntry(id: number): void {
 
 export function getHistoryEntry(id: number): HistoryEntry | null {
   const row = db()
-    .prepare(
-      `SELECT id, created_at, prompt, answers_json, synth_text, synth_error, project_id
-       FROM history WHERE id = ?`,
-    )
-    .get(id) as
-    | {
-        id: number;
-        created_at: number;
-        prompt: string;
-        answers_json: string;
-        synth_text: string | null;
-        synth_error: string | null;
-        project_id: number | null;
-      }
-    | undefined;
-
-  if (!row) return null;
-  return {
-    id: row.id,
-    createdAt: row.created_at,
-    prompt: row.prompt,
-    answers: JSON.parse(row.answers_json) as Record<Provider, HistoryAnswer>,
-    synthText: row.synth_text,
-    synthError: row.synth_error,
-    projectId: row.project_id,
-  };
+    .prepare(`SELECT ${SELECT_COLS} FROM history WHERE id = ?`)
+    .get(id) as Row | undefined;
+  return row ? toEntry(row) : null;
 }
 
 export function updateHistorySynth(

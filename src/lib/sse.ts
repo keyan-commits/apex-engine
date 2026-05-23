@@ -1,13 +1,27 @@
 import type { Provider, Tier } from "./providers";
+import type { RoleId } from "./roles";
 
 export type SseEvent =
-  | { type: "open"; provider: Provider; tier: Tier; model: string }
+  | {
+      type: "open";
+      provider: Provider;
+      tier: Tier;
+      model: string;
+      role?: RoleId | null;
+    }
   | { type: "delta"; provider: Provider; text: string }
-  | { type: "done"; provider: Provider }
+  | { type: "done"; provider: Provider; latencyMs?: number }
   | { type: "error"; provider: Provider | "synthesizer"; message: string }
+  | { type: "warning"; message: string }
+  | { type: "cancelled" }
   | { type: "synth-open" }
   | { type: "synth-delta"; text: string }
-  | { type: "synth-done" };
+  | { type: "synth-done"; latencyMs?: number }
+  | { type: "history-saved"; id: number };
+
+export function encodeSse(event: SseEvent): string {
+  return `data: ${JSON.stringify(event)}\n\n`;
+}
 
 export async function* parseSse(res: Response): AsyncGenerator<SseEvent> {
   if (!res.body) throw new Error("response has no body");

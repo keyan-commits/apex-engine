@@ -147,6 +147,7 @@ server.tool(
       error: a.error ?? undefined,
     }));
 
+    const synthStart = Date.now();
     let synthText = "";
     let synthError: string | null = null;
     try {
@@ -166,6 +167,8 @@ server.tool(
         synthText: synthError ? null : synthText,
         synthError,
         projectId: null,
+        synthesizerId: synthesizerId ?? null,
+        totalLatencyMs: Date.now() - synthStart,
       });
     } catch (err) {
       console.error("[mcp] history save failed:", err);

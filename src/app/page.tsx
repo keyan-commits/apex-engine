@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useReducer, useState } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 import { ChatInput } from "@/components/ChatInput";
+import { EnsemblePicker } from "@/components/EnsemblePicker";
 import { HistorySidebar } from "@/components/HistorySidebar";
 import { ModelPanel, type PanelState } from "@/components/ModelPanel";
 import { ProjectSelector } from "@/components/ProjectSelector";
@@ -10,6 +11,11 @@ import { SynthesizerPanel, type SynthState } from "@/components/SynthesizerPanel
 import type { HistoryAnswer, HistoryEntry } from "@/lib/history";
 import type { Project } from "@/lib/projects";
 import { PROVIDERS, type Provider } from "@/lib/providers";
+import {
+  DEFAULT_ENSEMBLE_ID,
+  ENSEMBLES,
+  type EnsembleId,
+} from "@/lib/roles";
 import { parseSse, type SseEvent } from "@/lib/sse";
 import {
   DEFAULT_SYNTHESIZER_ID,
@@ -19,6 +25,7 @@ import {
 
 const SYNTHESIZER_PREF_KEY = "apex.synthesizer";
 const SYNTHESIZER_ID_KEY = "apex.synthesizer-id";
+const ENSEMBLE_ID_KEY = "apex.ensemble-id";
 
 type State = {
   submitting: boolean;
@@ -26,12 +33,21 @@ type State = {
   selectedHistoryId: number | null;
   historyRefreshKey: number;
   activeProject: Project | null;
+  notice: string | null;
   models: Record<Provider, PanelState>;
   synth: SynthState;
 };
 
 function initialPanel(): PanelState {
-  return { status: "idle", tier: null, model: null, text: "", error: null };
+  return {
+    status: "idle",
+    tier: null,
+    model: null,
+    text: "",
+    error: null,
+    latencyMs: null,
+    role: null,
+  };
 }
 
 function initialState(): State {
@@ -41,13 +57,14 @@ function initialState(): State {
     selectedHistoryId: null,
     historyRefreshKey: 0,
     activeProject: null,
+    notice: null,
     models: {
       claude: initialPanel(),
       openai: initialPanel(),
       llama: initialPanel(),
       gemini: initialPanel(),
     },
-    synth: { status: "idle", text: "", error: null },
+    synth: { status: "idle", text: "", error: null, latencyMs: null },
   };
 }
 
@@ -58,17 +75,21 @@ function answerToPanel(a: HistoryAnswer): PanelState {
     model: a.model,
     text: a.text,
     error: a.error,
+    latencyMs: a.latencyMs ?? null,
+    role: a.role ?? null,
   };
 }
 
 type Action =
   | { kind: "submit"; prompt: string }
   | { kind: "settle" }
+  | { kind: "cancel-all" }
   | { kind: "sse"; event: SseEvent }
   | { kind: "new-chat" }
   | { kind: "load-history"; entry: HistoryEntry }
   | { kind: "history-refresh" }
-  | { kind: "set-project"; project: Project | null };
+  | { kind: "set-project"; project: Project | null }
+  | { kind: "dismiss-notice" };
 
 function reducer(state: State, action: Action): State {
   switch (action.kind) {
@@ -85,6 +106,27 @@ function reducer(state: State, action: Action): State {
     }
     case "settle":
       return { ...state, submitting: false };
+    case "cancel-all": {
+      // Mark any in-flight panels as cancelled.
+      const cancelled: Record<Provider, PanelState> = { ...state.models };
+      for (const p of PROVIDERS) {
+        const m = cancelled[p];
+        if (m.status === "open" || m.status === "streaming") {
+          cancelled[p] = { ...m, status: "error", error: "Cancelled" };
+        }
+      }
+      const synth =
+        state.synth.status === "open" || state.synth.status === "streaming"
+          ? { ...state.synth, status: "error" as const, error: "Cancelled" }
+          : state.synth;
+      return {
+        ...state,
+        submitting: false,
+        models: cancelled,
+        synth,
+        notice: "Cancelled",
+      };
+    }
     case "new-chat": {
       const fresh = initialState();
       return {
@@ -101,6 +143,8 @@ function reducer(state: State, action: Action): State {
         historyRefreshKey: state.historyRefreshKey + 1,
         activeProject: action.project,
       };
+    case "dismiss-notice":
+      return { ...state, notice: null };
     case "load-history": {
       const e = action.entry;
       return {
@@ -109,6 +153,7 @@ function reducer(state: State, action: Action): State {
         selectedHistoryId: e.id,
         historyRefreshKey: state.historyRefreshKey,
         activeProject: state.activeProject,
+        notice: e.cancelled ? "This entry was cancelled mid-run." : null,
         models: {
           claude: answerToPanel(e.answers.claude),
           openai: answerToPanel(e.answers.openai),
@@ -119,6 +164,7 @@ function reducer(state: State, action: Action): State {
           status: e.synthError ? "error" : e.synthText ? "done" : "idle",
           text: e.synthText ?? "",
           error: e.synthError,
+          latencyMs: null,
         },
       };
     }
@@ -135,6 +181,7 @@ function reducer(state: State, action: Action): State {
                 status: "open",
                 tier: ev.tier,
                 model: ev.model,
+                role: ev.role ?? null,
               },
             },
           };
@@ -158,6 +205,7 @@ function reducer(state: State, action: Action): State {
               [ev.provider]: {
                 ...state.models[ev.provider],
                 status: "done",
+                latencyMs: ev.latencyMs ?? null,
               },
             },
           };
@@ -179,8 +227,17 @@ function reducer(state: State, action: Action): State {
               },
             },
           };
+        case "warning":
+          return { ...state, notice: ev.message };
+        case "cancelled":
+          return state; // Surface via cancel-all dispatched by client on AbortError.
+        case "history-saved":
+          return state;
         case "synth-open":
-          return { ...state, synth: { status: "open", text: "", error: null } };
+          return {
+            ...state,
+            synth: { status: "open", text: "", error: null, latencyMs: null },
+          };
         case "synth-delta":
           return {
             ...state,
@@ -191,7 +248,14 @@ function reducer(state: State, action: Action): State {
             },
           };
         case "synth-done":
-          return { ...state, synth: { ...state.synth, status: "done" } };
+          return {
+            ...state,
+            synth: {
+              ...state.synth,
+              status: "done",
+              latencyMs: ev.latencyMs ?? null,
+            },
+          };
       }
     }
   }
@@ -213,6 +277,14 @@ export default function Home() {
       : DEFAULT_SYNTHESIZER_ID;
   });
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [ensembleId, setEnsembleId] = useState<EnsembleId>(() => {
+    if (typeof window === "undefined") return DEFAULT_ENSEMBLE_ID;
+    const stored = window.localStorage.getItem(ENSEMBLE_ID_KEY);
+    return stored && stored in ENSEMBLES
+      ? (stored as EnsembleId)
+      : DEFAULT_ENSEMBLE_ID;
+  });
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     window.localStorage.setItem(
@@ -225,7 +297,41 @@ export default function Home() {
     window.localStorage.setItem(SYNTHESIZER_ID_KEY, synthesizerId);
   }, [synthesizerId]);
 
+  useEffect(() => {
+    window.localStorage.setItem(ENSEMBLE_ID_KEY, ensembleId);
+  }, [ensembleId]);
+
+  // Abort any in-flight request on unmount.
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+    };
+  }, []);
+
+  function handleStop() {
+    if (!abortRef.current) return;
+    abortRef.current.abort();
+    abortRef.current = null;
+    dispatch({ kind: "cancel-all" });
+  }
+
+  // Esc to stop while streaming.
+  useEffect(() => {
+    if (!state.submitting) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        handleStop();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [state.submitting]);
+
   async function handleSubmit(prompt: string) {
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
     dispatch({ kind: "submit", prompt });
     try {
       const res = await fetch("/api/ask", {
@@ -236,15 +342,22 @@ export default function Home() {
           projectId: state.activeProject?.id ?? null,
           synthesize: synthesizerEnabled,
           synthesizerId,
+          ensembleId,
         }),
+        signal: controller.signal,
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       for await (const event of parseSse(res)) {
         dispatch({ kind: "sse", event });
       }
     } catch (err) {
-      console.error(err);
+      if ((err as { name?: string }).name === "AbortError") {
+        dispatch({ kind: "cancel-all" });
+      } else {
+        console.error(err);
+      }
     } finally {
+      if (abortRef.current === controller) abortRef.current = null;
       dispatch({ kind: "settle" });
       dispatch({ kind: "history-refresh" });
     }
@@ -252,6 +365,9 @@ export default function Home() {
 
   async function handleResynthesize() {
     if (state.selectedHistoryId == null) return;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
     try {
       const res = await fetch("/api/resynthesize", {
         method: "POST",
@@ -260,14 +376,20 @@ export default function Home() {
           id: state.selectedHistoryId,
           synthesizerId,
         }),
+        signal: controller.signal,
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       for await (const event of parseSse(res)) {
         dispatch({ kind: "sse", event });
       }
     } catch (err) {
-      console.error(err);
+      if ((err as { name?: string }).name === "AbortError") {
+        dispatch({ kind: "cancel-all" });
+      } else {
+        console.error(err);
+      }
     } finally {
+      if (abortRef.current === controller) abortRef.current = null;
       dispatch({ kind: "history-refresh" });
     }
   }
@@ -301,6 +423,7 @@ export default function Home() {
                   dispatch({ kind: "set-project", project })
                 }
               />
+              <EnsemblePicker active={ensembleId} onChange={setEnsembleId} />
             </div>
             <div className="flex items-center gap-3">
               <p className="text-xs text-neutral-500">
@@ -319,10 +442,27 @@ export default function Home() {
 
           <ChatInput
             onSubmit={handleSubmit}
-            disabled={state.submitting}
+            onStop={handleStop}
+            streaming={state.submitting}
             synthesizerEnabled={synthesizerEnabled}
             onToggleSynthesizer={setSynthesizerEnabled}
           />
+
+          {state.notice && (
+            <div className="rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 px-3 py-2 text-xs flex items-center justify-between">
+              <span className="text-amber-900 dark:text-amber-100">
+                {state.notice}
+              </span>
+              <button
+                type="button"
+                onClick={() => dispatch({ kind: "dismiss-notice" })}
+                aria-label="Dismiss notice"
+                className="text-amber-700 dark:text-amber-300 hover:text-amber-900 dark:hover:text-amber-100 ml-3"
+              >
+                ×
+              </button>
+            </div>
+          )}
 
           {state.currentPrompt && (
             <div className="rounded-lg border border-neutral-200 dark:border-neutral-800 bg-white/50 dark:bg-neutral-900/50 p-3 text-sm">

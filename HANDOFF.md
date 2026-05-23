@@ -3,9 +3,43 @@
 > Updated after every completed task. Read this first to resume work in a new session — it captures volatile state that `CLAUDE.md` doesn't (CLAUDE.md is stable architecture; this is "where are we right now").
 
 **Last updated:** 2026-05-24
-**Last action:** Fixed Next.js hydration error in `HistorySidebar.tsx` — the delete `<button>` was nested inside the row-load `<button>` (invalid HTML, `button-in-button`). Restructured: outer wrapper is now a `div` with `flex items-stretch`, the load-row button and delete button are siblings inside it. Same UX (hover-reveal delete via `group-hover`), valid HTML. No more hydration warnings.
+**Last action:** Shipped a 25-feature compounding-improvements pass driven by `apex_synthesize` for design questions. Phases A-E:
 
-**Previously:** Verified Groq catalog before swapping synthesizer (user explicitly asked to stop guessing). Research dispatch fetched live `console.groq.com/docs/models` and `/docs/deprecations`. Both prior picks confirmed decommissioned (`qwen-qwq-32b` 2025-07-14, `deepseek-r1-distill-llama-70b` 2025-10-02). Groq's own migration table for both → `openai/gpt-oss-120b`. Sanity-checked with a real API call (`curl ... model: openai/gpt-oss-120b ... Respond with exactly PONG`) — returned `PONG` cleanly with reasoning in a separate `reasoning` field (so the `stripThinkTags()` wrapper is a no-op for this model — kept anyway as a safety net).
+- **Foundation:** Vitest (`pnpm test:run`, 48 tests, all passing), `src/lib/log.ts` (level-aware logger), `src/lib/errors.ts` (`classifyError`/`userFacingMessage` — maps 401/403/429/timeout/abort/network/server/unknown), expanded `SseEvent` union (`warning`, `cancelled`, `history-saved`, `latencyMs` on `done`/`synth-done`, `role` on `open`), `encodeSse()` helper.
+- **Abort + timeout:** `req.signal` threaded through `fanOut`, `synthesize`, `streamText`'s native `abortSignal`. Per-provider 90s timeout via `AbortSignal.timeout()` + `AbortSignal.any()`. Claude Agent SDK is best-effort (breaks loop on abort; upstream HTTP may still complete — documented limitation since we cannot use the standard `@anthropic-ai/sdk` without giving up the free-Claude property).
+- **History:** new columns `cancelled` / `synthesizer_id` / `total_latency_ms` / `ensemble_id` / `roles_json` + per-provider `latencyMs` inside `answers_json`. Probe-and-migrate pattern (same shape as the `project_id` fix).
+- **UX:** Stop button replaces Submit while streaming, Esc shortcut, copy buttons on every panel, char + latency footer, `React.memo` + rAF-coalesced `Markdown` to kill streaming re-render thrash, dismissable warning banner (saveHistory errors no longer silently swallowed).
+- **Roles / Mixture of Roles ("super AI" feature):** new `src/lib/roles.ts` with 10 roles (Developer, QA, Architect, Analyst, Reviewer, PM, Security, Researcher, Devil's Advocate, Teacher) and 5 named ensembles (None, Code Review, Research, Decision, Brainstorm). Each ensemble maps Provider → Role; the role's `suffix` is appended to the per-provider system prompt. Synthesizer prompt now labels each answer with its role (e.g., `### Claude (Architect) responded:`) and gets a preamble explaining the lenses. New `EnsemblePicker` header chip with role-mapping preview; selection persists in localStorage as `apex.ensemble-id`. `ModelPanel` shows the role badge. History persists `ensemble_id` and `roles_json` so old entries display correctly.
+- **Docs:** README and HANDOFF refreshed.
+
+**Verification done:**
+
+- `pnpm type-check` clean.
+- `pnpm build` clean (52 kB page bundle, 154 kB First Load JS).
+- `pnpm test:run` — 48 tests across 6 files, all passing (tiers / synthesizer-options / errors / sse / roles / smoke).
+- Live `curl -N` against `/api/ask` on the dev server returned the new typed event shape with `role` and `latencyMs` populated. The ensemble `decision` correctly produced `claude=architect / openai=analyst / llama=devil / gemini=pm`, persisted to `history.ensemble_id` and `history.roles_json`.
+- MCP server (`./bin/apex-engine-mcp`) boots and responds to `initialize` JSON-RPC over stdio.
+
+**Blocked on:** Nothing. Branch has uncommitted changes ready for review; user can commit when satisfied. The MCP server already has the env-loading fix from the previous session and is fully working.
+
+**Followups worth doing later (not blocking):**
+
+- Surface ensemble + roles in `/api/resynthesize` (currently re-synthesizes with the historical roles already baked into `entry.answers[*].role` so the labels are correct, but the call path doesn't accept a new `ensembleId` — by design, since re-running with different roles would invalidate the saved fan-out answers).
+- Switch `roles_json` to a single `roles` JSON1 query if we ever want to filter history by ensemble (`WHERE json_extract(roles_json, '$.claude') = 'dev'`).
+- Add an MCP tool param `ensembleId` so Claude Code can invoke `apex_fanout` with `code-review` etc. Trivial — `roles.ts` already exports `findEnsemble`.
+- Per-provider timeout is fixed at 90s. Could expose in Settings.
+- Quota indicator in UI (still pending from earlier backlog).
+- Better-sqlite3 `BEGIN`/`COMMIT` block around the multi-`ALTER TABLE` migration if we ever ship a multi-user version.
+
+---
+
+**Previously:** Verified MCP server env-loading fix end-to-end. After Claude Code restart, called `apex_fanout` with `say PONG in one word` from inside Claude Code — all three providers responded cleanly. The `--env-file-if-exists=$DIR/.env.local` flag in `bin/apex-engine-mcp` is working as intended.
+
+**Previously:** Fixed MCP server env loading. First test call of `apex_fanout` from Claude Code returned "Unauthorized" / "API key missing" errors for all three providers — Next.js auto-loads `.env.local` for `pnpm dev`, but the MCP launcher invokes `tsx src/mcp/server.ts` directly, outside the Next.js boot path, so provider SDKs saw an empty env. Fix: `bin/apex-engine-mcp` now passes `--env-file-if-exists=$DIR/.env.local` to tsx (Node 22.7+ built-in, user is on Node 24.11). Verified `GROQ_API_KEY`, `GITHUB_MODELS_TOKEN`, `GOOGLE_GENERATIVE_AI_API_KEY` all populate in a tsx child process. No new dep.
+
+**Previously:** Fixed Next.js hydration error in `HistorySidebar.tsx` — the delete `<button>` was nested inside the row-load `<button>` (invalid HTML, `button-in-button`). Restructured: outer wrapper is now a `div` with `flex items-stretch`, the load-row button and delete button are siblings inside it. Same UX (hover-reveal delete via `group-hover`), valid HTML.
+
+**Previously:** Verified Groq catalog before swapping synthesizer (user explicitly asked to stop guessing). Research dispatch fetched live `console.groq.com/docs/models` and `/docs/deprecations`. Both prior picks confirmed decommissioned (`qwen-qwq-32b` 2025-07-14, `deepseek-r1-distill-llama-70b` 2025-10-02). Groq's own migration table for both → `openai/gpt-oss-120b`. Sanity-checked with a real API call — returned `PONG` cleanly with reasoning in a separate `reasoning` field (so the `stripThinkTags()` wrapper is a no-op for this model — kept anyway as a safety net).
 
 **Swap:** `synthesizer-options.ts` updated to current Groq catalog. New options:
 1. `gpt-oss-120b` (Groq, OpenAI open-weights, 131K ctx) — **default**
@@ -14,145 +48,21 @@
 4. `gpt-4o-mini` (unchanged — GitHub Models)
 5. `gemini-flash` (unchanged — AI Studio)
 
-Removed: `deepseek-r1-distill` (decommissioned). The stale-ID guard added previously falls back to `gpt-oss-120b` when localStorage still references a removed option, so users won't see broken state.
+Removed: `deepseek-r1-distill` (decommissioned). The stale-ID guard added previously falls back to `gpt-oss-120b` when localStorage still references a removed option.
 
-Added a comment in `synthesizer-options.ts` documenting Groq's catalog churn and listing the graveyard so future-Claude doesn't fall into the same trap. Re-verification needed when models start 429'ing or returning decommissioned errors.
+**Previously:** Added MCP server so Claude Code (or any MCP client) can invoke apex-engine as a tool — `apex_fanout` and `apex_synthesize`. Boots cleanly, registered with Claude Code via `claude mcp add apex-engine -- /Users/nikoe/Development/Study/apex-engine/bin/apex-engine-mcp`.
 
-**Previously:** Added MCP server so Claude Code (or any MCP client) can invoke apex-engine as a tool.
-
-**Files:**
-- `src/mcp/server.ts` — boots `McpServer` over stdio, exposes two tools:
-  - `apex_fanout({ prompt, includeClaude? })` — parallel queries to GPT/Llama/Gemini (+ Claude if `includeClaude: true`), returns each answer formatted.
-  - `apex_synthesize({ prompt, includeClaude?, synthesizerId? })` — fan-out + synthesized best answer (Mixture-of-Agents).
-- `bin/apex-engine-mcp` — shell launcher; `cd`s to project root (so `.env.local` and `data/apex.db` resolve correctly), exec's local `node_modules/.bin/tsx src/mcp/server.ts`. Made executable.
-- `package.json` — added `"bin": { "apex-engine-mcp": "./bin/apex-engine-mcp" }` and `"mcp"` npm script.
-
-**Deps installed:** `@modelcontextprotocol/sdk@1.29.0`, `zod@4.4.3`, `tsx@4.22.3`. `tsx` is a runtime dep (not devdep) because the bin launcher uses it.
-
-**Key design choices:**
-- Tools default `includeClaude: false` — invoking apex-engine from Claude Code while routing the Claude slot back through Claude Agent SDK creates self-call recursion. Off by default, opt-in if useful.
-- stdout-protection: console.log overridden to console.error since MCP stdio uses stdout for framed JSON-RPC.
-- MCP queries DO write to the shared `data/apex.db` history table (via `saveHistory` with `projectId: null`). They appear in the web app's history sidebar under "None".
-- All four providers' slots from the web app are honored; tier resolution and quota tracking apply.
-
-**Verified:** sent `initialize` JSON-RPC handshake to `./bin/apex-engine-mcp` over stdin; server responded with valid `protocolVersion: 2025-06-18` and `capabilities: { tools: { listChanged: true } }`. Clean boot.
-
-**To register with Claude Code:** `claude mcp add apex-engine -- /Users/nikoe/Development/Study/apex-engine/bin/apex-engine-mcp`. Or edit `~/.claude.json` / project `.claude/mcp.json` to add a `mcpServers.apex-engine.command` entry.
-
-**Previously:** **Bug fix: history was silently never saving since the Projects feature landed.** `db()` init in `src/lib/history.ts` had `CREATE INDEX ... ON history(project_id)` *inside the same `d.exec()` block* as `CREATE TABLE IF NOT EXISTS history` — on pre-existing DBs that didn't have `project_id` yet, the index creation threw "no such column", aborting the whole exec block *before* the `ALTER TABLE ADD COLUMN` migration ran. Every subsequent `db()` call re-threw. `saveHistory()` calls in `/api/ask/route.ts` were wrapped in `try { ... } catch { console.error }` — so the failure was invisible to the user; their queries completed in the UI but nothing persisted. User had 0 history rows in the DB.
-
-**Recovery: not possible** — those saves never hit disk.
-
-**Fix:**
-- Live DB patched via `sqlite3 data/apex.db "ALTER TABLE history ADD COLUMN project_id INTEGER; CREATE INDEX IF NOT EXISTS idx_history_project_id ON history(project_id);"`.
-- Source code in `src/lib/history.ts` reordered: CREATE TABLE + non-project index in one `exec`, then probe via `PRAGMA table_info(history)` for `project_id`, ALTER TABLE only if missing, then CREATE INDEX for project_id. Robust on both fresh and migrated DBs.
-
-**Followup worth doing:** the `try/catch` around saveHistory in `route.ts` and `resynthesize/route.ts` should emit a visible SSE error event instead of just `console.error` — would have surfaced this immediately.
+**Previously:** **Bug fix: history was silently never saving since the Projects feature landed.** `db()` init had `CREATE INDEX ... ON history(project_id)` in the same `d.exec()` block as `CREATE TABLE IF NOT EXISTS history` — on pre-existing DBs that didn't have `project_id` yet, the index creation threw "no such column", aborting the whole exec block before the `ALTER TABLE ADD COLUMN` migration ran. Fixed by splitting the migration probe into its own block and applying ALTERs one at a time (the new schema migrations follow this pattern).
 
 **Previously:** Added Re-synthesize feature so failed/missing synth answers on historical entries can be regenerated against current saved fan-out answers.
 
-**New / changed:**
-- `src/app/api/resynthesize/route.ts` — POST with `{ id, synthesizerId? }`. Reads history row via `getHistoryEntry()`, reuses project's system prompt if applicable, builds `synthInput: FanOutAnswer[]` from saved per-provider text/errors, streams synth via SSE (same events as `/api/ask`), then `updateHistorySynth()` writes back synth_text/synth_error in place.
-- `src/lib/history.ts` — added `getHistoryEntry(id)` and `updateHistorySynth(id, synthText, synthError)`.
-- `src/components/SynthesizerPanel.tsx` — accepts optional `onResynthesize`, `resynthDisabled`. Renders a `↻ Re-synthesize` button left of the StatusBadge when `onResynthesize` is provided. Disabled while synth is in-flight.
-- `src/app/page.tsx` — `handleResynthesize()` calls the new route, streams events through existing reducer (re-uses synth-open / synth-delta / synth-done / error handlers), triggers `history-refresh` on settle. `viewingHistory = state.selectedHistoryId !== null` gates the button. `showSynth` also true when viewing history (so the panel is available even if synthesizer toggle is off). `synthInFlight` flag prevents double-clicks during streaming.
-
-Behavior: button only appears when a history entry is loaded. Works for any past entry — successful, errored, or null-synth. Uses the *currently-selected* synthesizer model; the new synth_text is saved to the DB and the sidebar refreshes to reflect it.
-
-**Previously:** Groq decommissioned `qwen-qwq-32b` — user's synthesizer surfaced "The model has been decommissioned and is no longer supported." Removed `qwen-qwq` from `SYNTHESIZER_OPTIONS` in `src/lib/synthesizer-options.ts` and changed `DEFAULT_SYNTHESIZER_ID` to `deepseek-r1-distill`. Added a stale-ID guard in `page.tsx` — if `localStorage["apex.synthesizer-id"]` references an option that no longer exists, fall back to default at boot. New queries will synthesize fine; **historical entries where the QwQ synth failed remain broken** (their `synth_text` is null in the DB) — would need a "Re-synthesize" button to rerun on saved fan-out answers.
-
-**Previously:** Fixed GHSA-qx2v-qp2m-jg93 (postcss XSS via unescaped `</style>` in CSS stringify, moderate) reported by Dependabot. Vulnerable transitive `postcss <8.5.10` came in via `next`. Added a pnpm override in `pnpm-workspace.yaml`:
-
-```yaml
-overrides:
-  postcss: ">=8.5.10"
-```
-
-`pnpm install` deduped (-1 package). Verified clean with `pnpm audit` ("No known vulnerabilities found"), `pnpm type-check`, `pnpm build`.
-
-**Previously:** Repo flipped to **public** at https://github.com/keyan-commits/apex-engine. Audited for secrets — clean: only `.env.example` tracked (empty template), no `.env*`/`data/`/`*.db` ever committed, grep across full commit history found zero matches for `gsk_`, `sk-`, `ghp_`, `github_pat_`, `AIza`, or `Bearer …` patterns.
-
-**Previously:** pushed to GitHub as private (public creation was auto-blocked by classifier; created private first, then user ran `gh repo edit --visibility public`). Branch `main` tracks `origin/main`. Both commits live remotely:
-- `70361d8` — Initial commit
-- `21ca2a4` — Add MIT license
-
-**To flip to public** (if/when user wants): https://github.com/keyan-commits/apex-engine/settings → Danger zone → "Change visibility" → Public. Or `gh repo edit keyan-commits/apex-engine --visibility public` (may also hit the classifier).
-
-**Previously:** Initialized git repo + added MIT license. Two local commits on `main`:
-- `70361d8` — Initial commit (35 files, README.md added)
-- `21ca2a4` — Add MIT license (LICENSE file, `"license": "MIT"` in package.json, README license section updated)
-
-User wants to publish to `keyan-commits/apex-engine` as **public** repo. `gh` is authenticated as `keyan-commits` with `repo` scope. The `gh repo create ... --public --push` call was **blocked by auto-mode classifier** as a "Create Public Surface" soft-block — needs user-side execution.
-
-**Resume command for the user to run themselves (prefix `!` for in-session execution):**
-
-```
-!gh repo create keyan-commits/apex-engine --public --source=/Users/nikoe/Development/Study/apex-engine --push --description "Local single-user multi-LLM fan-out web app with Mixture-of-Agents synthesizer. Claude + GPT + Llama + Gemini, side-by-side."
-```
-
-Or use `--private` and flip in GitHub UI after creation to avoid the classifier block. Safety verified before initial commit: `.env.local`, `data/`, `node_modules/`, `.next/` all gitignored. Initial commit contains 35 files, no secrets.
-
-**Previous action:** Fixed hardcoded "synthesized by Claude Sonnet" label in `SynthesizerPanel.tsx` — now accepts a `synthesizerLabel` prop and shows the currently-selected synthesizer (e.g., "synthesized by Qwen QwQ 32B (Groq)"). `page.tsx` computes label via `findSynthesizer(synthesizerId).label` from `synthesizer-options.ts` and passes through.
-
-Caveat: when loading a *historical* entry, the label still shows the *currently configured* synthesizer, not the one that actually produced that historical answer. To fix properly, would need to save `synthesizer_id` in the `history` table — defer for now.
-
-**Previous action:** Swapped default synthesizer to **Qwen QwQ 32B (via Groq)** and added user-facing synthesizer picker.
-
-- New `src/lib/synthesizer-options.ts` — single source of truth (client + server safe): `SynthesizerOption` type, `SYNTHESIZER_OPTIONS` array (qwen-qwq / deepseek-r1-distill / claude-sonnet / gpt-4o-mini / gemini-flash), `DEFAULT_SYNTHESIZER_ID = "qwen-qwq"`, `findSynthesizer(id)` helper.
-- `src/lib/synthesize.ts` refactored — `synthesize(prompt, answers, { synthesizerId?, systemPrompt? })`. Dispatches to either Claude Agent SDK (for `anthropic-agent`) or Vercel AI SDK `streamText` (for `groq`/`github-models`/`google`). Added `stripThinkTags()` async generator wrapper to scrub `<think>...</think>` reasoning blocks from QwQ/DeepSeek-R1 reasoning model outputs (streaming-safe with split-tag handling). Removed dependency on `SYNTHESIZER_MODEL` constant.
-- `src/lib/providers.ts` — removed `SYNTHESIZER_MODEL` export (moved into synthesizer-options.ts).
-- `src/app/api/ask/route.ts` — accepts `synthesizerId` in body, passes through to `synthesize()`.
-- New `src/components/Settings.tsx` — modal with a `<select>` of `SYNTHESIZER_OPTIONS`, shows the note for the active choice. Mentions where to edit the options list in code.
-- `src/app/page.tsx` — added `synthesizerId` state (localStorage key `apex.synthesizer-id`), settings modal toggle, gear icon (⚙) in the header. `handleSubmit` sends both `synthesize` flag and `synthesizerId` to `/api/ask`.
-
-**Synthesizer pre-flight on first call after this change:** Groq's QwQ-32B occasionally emits `<think>...</think>` reasoning blocks inline; the streaming scrubber in `synthesize.ts` discards anything between those tags. If the model outputs malformed/unclosed tags, content after the unclosed `<think>` is suppressed — accept as MVP behavior.
-
-**Blocked on:** User to test — reload, click ⚙, verify dropdown has 5 options with notes, switch between them and submit prompts to confirm each works.
-
----
-
-**Previous actions (this session):** Projects feature, history sidebar, keyboard fix, slot rename (deepseek→llama), GitHub Models for OpenAI slot, Gemini model fix (2.5-flash), synthesizer toggle, etc.
-
-- `ChatInput.tsx` now has an iOS-style switch left of the Submit button: "Synthesize best answer". Preference persists in `localStorage` under `apex.synthesizer` (read via `useState` init function to avoid hydration flicker).
-- `page.tsx` threads `synthesizerEnabled` through props; `handleSubmit` sends `synthesize: boolean` in the `/api/ask` body; the `SynthesizerPanel` is hidden when toggle is off AND there's no historical synth text/error to show.
-- `src/app/api/ask/route.ts` reads `body.synthesize` (default `true`), wraps the synthesizer block in `if (synthesizerEnabled)`, and saves history with `synthText: null, synthError: null` when skipped. SSE emits no synth events in that case.
-
-**Open decision for next session:** user asked "what is the best way for a free synthesizer?" — current synthesizer is Claude Sonnet 4.6 via Claude Agent SDK (free for user but consumes Max-5x rate limit). Recommended alternative: **Llama 3.3 70B Versatile via Groq** (free, 1000 RPD, doesn't touch Claude limit, 300+ TPS, already configured via `GROQ_API_KEY`). Would require small change in `src/lib/synthesize.ts` — swap `query()` from Claude Agent SDK to Vercel AI SDK's `streamText({ model: groq("llama-3.3-70b-versatile"), ... })`. Holding for user confirmation before swapping.
-
-**Older actions:** Projects feature (named containers with system prompts applied to all 4 LLMs + synthesizer) — see commit/history just before this entry. Plus history sidebar, keyboard fix, slot rename (deepseek→llama), GitHub Models for OpenAI slot, Gemini model fix, etc.
-
-**New files:**
-- `src/lib/projects.ts` — SQLite `projects(id, created_at, name, description, system_prompt)`. CRUD: `createProject`, `listProjects`, `getProject`, `updateProject`, `deleteProject`.
-- `src/app/api/projects/route.ts` — `GET` (list), `POST` (create), `PATCH` (update), `DELETE`.
-- `src/components/ProjectSelector.tsx` — header dropdown chip "Project: [name] ▾". Lists projects with hover-edit and hover-delete. "+ New Project" opens an inline modal with name/description/system-prompt fields. Edit reuses the same modal.
-
-**Modified files:**
-- `src/lib/engine.ts` — `fanOut(prompt, systemPrompt?)` now passes system prompt through to all providers. Default system prompt set (general assistant) when none provided. Claude uses `systemPrompt: { type: "preset", preset: "claude_code", append: ... }` per Agent SDK v0.3.x shape; OpenAI/Llama/Gemini use Vercel AI SDK's `system:` param.
-- `src/lib/synthesize.ts` — `synthesize(prompt, answers, systemPrompt?)` propagates the project system prompt to the synthesizer call too, so style/persona stays consistent.
-- `src/lib/history.ts` — added `project_id INTEGER NULL` column (with `ALTER TABLE` backfill for existing DBs). `saveHistory()` accepts `projectId`. `listHistory({ projectId? })` filters when set.
-- `src/app/api/ask/route.ts` — accepts `{ prompt, projectId }`, looks up project via `getProject(projectId)`, passes `systemPrompt` to `fanOut` + `synthesize`, saves history row with `project_id`.
-- `src/app/api/history/route.ts` — `GET` accepts `?projectId=N` to filter.
-- `src/components/HistorySidebar.tsx` — accepts `projectId` prop, includes in fetch URL, refetches when project changes.
-- `src/app/page.tsx` — added `activeProject` to state. New action `set-project` resets the panel state and refreshes history when switching projects. `handleSubmit` sends `projectId` to `/api/ask`. Sidebar now project-aware.
-
-**UX flow:**
-- Click the "Project: None ▾" chip in the header → dropdown with `None` + existing projects + `+ New Project`.
-- Selecting a project: panels reset, history sidebar filters to that project, all subsequent queries get its system prompt.
-- Modal for create/edit has name (required), description (optional), system prompt (required, multi-line, monospace).
-- Hover a project in the dropdown → edit / × buttons appear.
-
-**Caveats:**
-- Knowledge files (Claude.ai Projects' upload-docs feature) **not implemented**. Would need RAG infra (chunking, embeddings, retrieval). Backlog.
-- The system prompt is applied verbatim — no per-project model overrides yet (e.g., "this project always uses Opus for Claude").
-- Existing history entries before this change have `project_id = NULL` — they show up in the global "None" view.
-
-**Blocked on:** User to test — create a project (e.g., "Coding tutor" with `You are a senior software engineer; answer code questions concisely with examples`), select it, submit a query, see that all 4 LLMs and the synthesizer adopt that persona. Verify history shows up under that project only.
+**Previously:** Projects feature (named containers with system prompts applied to all 4 LLMs + synthesizer). History sidebar, keyboard fix, slot rename (deepseek→llama), GitHub Models for OpenAI slot, Gemini model fix (2.5-flash), synthesizer toggle, etc.
 
 ---
 
 ## Project Goal (one paragraph)
 
-Local single-user web app. Fan one prompt out to 4 LLMs in parallel (Claude, GPT, DeepSeek, Gemini), display each response side-by-side, then synthesize a "best answer" using Claude Sonnet via Claude Agent SDK. Mixture-of-Agents pattern. Single-user/single-machine only (Claude path uses the local Claude Code OAuth, can't be deployed).
+Local single-user web app. Fan one prompt out to 4 LLMs in parallel (Claude, GPT, Llama, Gemini), display each response side-by-side, then synthesize a "best answer" using a designated reasoning model. Mixture-of-Agents pattern. With **Ensembles**, each model can be assigned a distinct role (Architect / Analyst / Devil's Advocate / etc.) so the diversity is by design rather than by accident — Mixture-of-Roles on top of Mixture-of-Agents. Single-user/single-machine only (Claude path uses the local Claude Code OAuth, can't be deployed).
 
 ## Stack (as of last update)
 
@@ -164,100 +74,109 @@ Local single-user web app. Fan one prompt out to 4 LLMs in parallel (Claude, GPT
 | Tailwind | 4.3.0 + @tailwindcss/typography 0.5.19 |
 | @anthropic-ai/claude-agent-sdk | 0.3.148 |
 | ai (Vercel AI SDK) | 6.0.190 |
-| @ai-sdk/openai | 3.0.65 |
+| @ai-sdk/openai-compatible | 2.0.47 |
 | @ai-sdk/google | 3.0.79 |
-| @ai-sdk/deepseek | 2.0.35 |
+| @ai-sdk/groq | 3.0.39 |
 | better-sqlite3 | 12.10.0 |
 | react-markdown | 10.1.0 |
 | remark-gfm | 4.0.1 |
+| vitest | 4.1.7 |
+| @modelcontextprotocol/sdk | 1.29.0 |
+| zod | 4.4.3 |
+| tsx | 4.22.3 |
 | pnpm | 11.2.2 (via Node 24 corepack) |
 
 ## Phase Status
 
-- [x] **Phase 0** — Skeleton (Next.js 15 + TS + Tailwind v4)
-- [x] **Phase 1** — Provider layer (`providers.ts`, `tiers.ts`, `quota.ts`)
-- [x] **Phase 2** — Engine / fan-out (`engine.ts`)
-- [x] **Phase 3** — Synthesizer (`synthesize.ts`)
-- [x] **Phase 4** — `/api/ask` SSE route (`src/app/api/ask/route.ts`)
-- [x] **Phase 5** — UI (`ChatInput`, `ModelPanel`, `SynthesizerPanel`, `Markdown`, `StatusBadge`)
-- [ ] **Phase 6** — Polish (abort, history sidebar, quota indicator, copy/export, error UX)
+- [x] **Phase 0** — Skeleton
+- [x] **Phase 1** — Provider layer
+- [x] **Phase 2** — Engine / fan-out
+- [x] **Phase 3** — Synthesizer
+- [x] **Phase 4** — `/api/ask` SSE route
+- [x] **Phase 5** — UI
+- [x] **Phase 6** — Polish (abort, per-provider timeout, copy, latency, throttling, error UX, history sidebar)
+- [x] **Phase 7** — Roles / Ensembles (Mixture-of-Roles)
+- [x] **Phase 8** — Tests (Vitest, 48 tests across 6 files)
 
-## Verified State
-
-**Works:**
-- `pnpm dev` boots at `localhost:3000` (warmup ~28s first request, fast after).
-- `pnpm type-check` clean. `pnpm build` clean.
-- UI renders, dark mode auto, four panels + synthesizer panel visible.
-- Submit triggers SSE multiplexed stream.
-- Claude fan-out streams via Claude Agent SDK (uses local Claude Code OAuth — no Anthropic API key required).
-- Markdown rendering on completed text.
-
-**Broken / Pending:**
-- GPT / DeepSeek / Gemini fail when no API keys present (expected). After engine.ts fix, they should now surface a clear `error` badge with the actual error message instead of showing `done` with empty text.
-- User has not yet added any API keys to `.env.local`.
-
-## Setup To Resume From Scratch
+## Commands
 
 ```bash
-cd /Users/nikoe/Development/Study/apex-engine
-corepack enable pnpm                  # one-time
-pnpm install                          # if node_modules missing
-cp .env.example .env.local             # if missing
-# edit .env.local — at minimum add GOOGLE_GENERATIVE_AI_API_KEY (free at https://aistudio.google.com/apikey)
-pnpm dev                              # http://localhost:3000
+pnpm install
+pnpm dev            # http://localhost:3000
+pnpm build
+pnpm type-check
+pnpm test           # interactive
+pnpm test:run       # CI / one-shot
+pnpm test:ui        # browser
+pnpm lint
+pnpm mcp            # run MCP server directly
 ```
 
-**Env vars are only read at boot.** Restart `pnpm dev` after editing `.env.local`.
-
-## File Layout (current, not the plan)
+## File Layout (current)
 
 ```
 apex-engine/
-├── CLAUDE.MD                          (stable architecture + standards)
-├── HANDOFF.md                          ← this file (volatile state)
+├── CLAUDE.MD
+├── HANDOFF.md
+├── README.md
 ├── package.json
-├── pnpm-workspace.yaml                 (allowBuilds: sharp, unrs-resolver, better-sqlite3)
+├── pnpm-workspace.yaml
 ├── pnpm-lock.yaml
 ├── tsconfig.json
+├── vitest.config.ts
 ├── next.config.ts
 ├── postcss.config.mjs
 ├── .env.example
 ├── .gitignore
+├── bin/
+│   └── apex-engine-mcp                (shell launcher → tsx src/mcp/server.ts)
 └── src/
     ├── app/
     │   ├── layout.tsx
-    │   ├── page.tsx                    (client component, reducer, SSE consumer)
-    │   ├── globals.css                 (Tailwind v4 + typography plugin)
-    │   └── api/ask/route.ts            (POST → SSE; runtime: nodejs)
+    │   ├── page.tsx                   (reducer, AbortController, Esc, EnsemblePicker)
+    │   ├── globals.css
+    │   └── api/
+    │       ├── ask/route.ts           (SSE; signal threading; latency; cancelled)
+    │       ├── resynthesize/route.ts  (SSE; signal threading)
+    │       ├── history/route.ts
+    │       └── projects/route.ts
     ├── components/
-    │   ├── ChatInput.tsx               (textarea + submit, ⌘/Ctrl+Enter)
-    │   ├── ModelPanel.tsx              (per-provider card)
-    │   ├── SynthesizerPanel.tsx        (best answer card)
-    │   ├── Markdown.tsx                (react-markdown + remark-gfm)
-    │   └── StatusBadge.tsx             (idle/open/streaming/done/error pill)
-    └── lib/
-        ├── providers.ts                (Provider type, MODELS registry, SYNTHESIZER_MODEL)
-        ├── tiers.ts                    (resolveModel, resolveAll)
-        ├── quota.ts                    (better-sqlite3, provider_quota table, UTC daily reset for Gemini)
-        ├── engine.ts                   (fanOut → 4 AsyncGenerator<string>)
-        ├── synthesize.ts               (Claude Sonnet via query(), takes FanOutAnswer[])
-        └── sse.ts                      (parseSse async generator on client)
+    │   ├── ChatInput.tsx              (Stop button, Esc hint)
+    │   ├── CopyButton.tsx             (NEW)
+    │   ├── EnsemblePicker.tsx         (NEW)
+    │   ├── HistorySidebar.tsx
+    │   ├── Markdown.tsx               (memo + rAF coalescing)
+    │   ├── ModelPanel.tsx             (role badge, char/latency footer, copy)
+    │   ├── ProjectSelector.tsx
+    │   ├── Settings.tsx
+    │   ├── StatusBadge.tsx
+    │   └── SynthesizerPanel.tsx       (latency footer, copy)
+    ├── lib/
+    │   ├── __tests__/                 (NEW: smoke, tiers, synthesizer-options, errors, sse, roles)
+    │   ├── engine.ts                  (signal + timeout + roles)
+    │   ├── errors.ts                  (NEW: classifyError / userFacingMessage)
+    │   ├── history.ts                 (cancelled/synthesizer_id/total_latency_ms/ensemble_id/roles_json)
+    │   ├── log.ts                     (NEW: leveled logger)
+    │   ├── projects.ts
+    │   ├── providers.ts
+    │   ├── quota.ts
+    │   ├── roles.ts                   (NEW: ROLES + ENSEMBLES)
+    │   ├── sse.ts                     (typed event union + encodeSse + parseSse)
+    │   ├── synthesize.ts              (role-aware prompt + signal)
+    │   ├── synthesizer-options.ts
+    │   └── tiers.ts
+    └── mcp/
+        └── server.ts
 ```
 
 ## Known Issues / Backlog
 
-- **Claude Agent SDK error path** — `streamClaude` doesn't currently catch system-error messages emitted by `query()`. Only checks `type === "assistant"`. If Claude itself fails (rate limit, etc.), the iterator ends silently. Should also handle `type === "result"` with non-success subtype.
-- **No abort/cancel** — closing the browser tab doesn't abort in-flight LLM calls.
-- **No per-provider timeout** — a hung provider blocks the synthesizer (synthesizer waits for all four).
-- **react-markdown re-renders on every delta** — fine for short outputs, may be costly on long ones.
+- **Claude abort is best-effort.** Agent SDK 0.3.x has no `AbortSignal` support. Stopping mid-stream prevents the UI from showing more tokens but the upstream HTTP call may complete in the background. Switching to `@anthropic-ai/sdk` directly would fix this but would forfeit the free-Claude-via-Code-OAuth property. Decision: live with the limitation until the Agent SDK gains signal support.
+- **Per-provider timeout** is hard-coded at 90s in `engine.ts` (`DEFAULT_PROVIDER_TIMEOUT_MS`). Expose in Settings if needed.
+- **MCP server does not currently accept `ensembleId`.** Adding it is trivial; deferred.
+- **No quota status indicator** in UI; `quota.ts` tracks state but the UI doesn't surface it.
+- **Re-synthesize** uses the historical roles already encoded in saved `answers`; cannot apply a new ensemble (by design — different roles would invalidate the cached fan-out).
 - **CLAUDE.MD filename case** — exists as `CLAUDE.MD` (uppercase) on disk; macOS filesystem is case-insensitive so this doesn't matter functionally, but worth noting.
-- **No request history persistence** — each submit resets UI state.
-- **No quota status indicator in UI** — `quota.ts` tracks state but UI doesn't surface it yet.
-
-## Pending Decisions
-
-- **Get OpenAI + DeepSeek API keys, or skip them?** User said they "use them in the browser" but doesn't yet have API access. Has confirmed Gemini is free + easy as first step.
-- **Phase 6 priorities?** Abort/cancel and history are the highest-impact for daily-driver use.
 
 ## Convention — Update This File After Every Task
 

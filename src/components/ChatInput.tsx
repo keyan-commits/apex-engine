@@ -4,12 +4,14 @@ import { useState } from "react";
 
 export function ChatInput({
   onSubmit,
-  disabled,
+  onStop,
+  streaming,
   synthesizerEnabled,
   onToggleSynthesizer,
 }: {
   onSubmit: (prompt: string) => void;
-  disabled: boolean;
+  onStop: () => void;
+  streaming: boolean;
   synthesizerEnabled: boolean;
   onToggleSynthesizer: (enabled: boolean) => void;
 }) {
@@ -17,7 +19,7 @@ export function ChatInput({
 
   function submit() {
     const v = value.trim();
-    if (!v || disabled) return;
+    if (!v || streaming) return;
     onSubmit(v);
     setValue("");
   }
@@ -33,10 +35,10 @@ export function ChatInput({
             submit();
           }
         }}
-        placeholder="Ask anything…  (Enter to submit · Shift+Enter for newline)"
+        placeholder="Ask anything…  (Enter to submit · Shift+Enter for newline · Esc to stop)"
         rows={3}
         className="w-full resize-none bg-transparent text-sm outline-none placeholder:text-neutral-400"
-        disabled={disabled}
+        disabled={streaming}
       />
       <div className="flex items-center justify-between pt-2">
         <div className="flex items-center gap-2 text-xs text-neutral-500">
@@ -60,14 +62,26 @@ export function ChatInput({
           </button>
           <span className="select-none">Synthesize best answer</span>
         </div>
-        <button
-          type="button"
-          onClick={submit}
-          disabled={disabled || !value.trim()}
-          className="rounded-lg bg-neutral-900 dark:bg-neutral-100 text-white dark:text-neutral-900 text-sm font-medium px-4 py-1.5 hover:bg-neutral-700 dark:hover:bg-neutral-300 disabled:opacity-40 disabled:cursor-not-allowed transition"
-        >
-          {disabled ? "Streaming…" : "Submit"}
-        </button>
+        {streaming ? (
+          <button
+            type="button"
+            onClick={onStop}
+            className="rounded-lg bg-red-600 text-white text-sm font-medium px-4 py-1.5 hover:bg-red-700 transition flex items-center gap-2"
+            aria-label="Stop streaming (Esc)"
+          >
+            <span className="inline-block w-2.5 h-2.5 bg-white rounded-[1px]" />
+            Stop
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={submit}
+            disabled={!value.trim()}
+            className="rounded-lg bg-neutral-900 dark:bg-neutral-100 text-white dark:text-neutral-900 text-sm font-medium px-4 py-1.5 hover:bg-neutral-700 dark:hover:bg-neutral-300 disabled:opacity-40 disabled:cursor-not-allowed transition"
+          >
+            Submit
+          </button>
+        )}
       </div>
     </div>
   );

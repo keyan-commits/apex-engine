@@ -1,6 +1,8 @@
 "use client";
 
 import { PROVIDER_LABELS, type Provider, type Tier } from "@/lib/providers";
+import { getRole, type RoleId } from "@/lib/roles";
+import { CopyButton } from "./CopyButton";
 import { Markdown } from "./Markdown";
 import { StatusBadge, type Status } from "./StatusBadge";
 
@@ -10,7 +12,15 @@ export type PanelState = {
   model: string | null;
   text: string;
   error: string | null;
+  latencyMs: number | null;
+  role: RoleId | null;
 };
+
+function formatLatency(ms: number | null): string | null {
+  if (ms == null) return null;
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
+}
 
 export function ModelPanel({
   provider,
@@ -19,13 +29,23 @@ export function ModelPanel({
   provider: Provider;
   state: PanelState;
 }) {
+  const latency = formatLatency(state.latencyMs);
+  const chars = state.text.length;
+  const role = state.role ? getRole(state.role) : null;
   return (
     <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-4 flex flex-col min-h-[300px]">
       <div className="flex items-center justify-between mb-3">
-        <div>
-          <h2 className="text-sm font-semibold">{PROVIDER_LABELS[provider]}</h2>
+        <div className="min-w-0">
+          <h2 className="text-sm font-semibold flex items-center gap-1.5">
+            {PROVIDER_LABELS[provider]}
+            {role && (
+              <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300">
+                {role.label}
+              </span>
+            )}
+          </h2>
           {state.model && (
-            <p className="text-xs text-neutral-500">
+            <p className="text-xs text-neutral-500 truncate">
               {state.model}
               {state.tier === "fallback" ? " (fallback)" : ""}
             </p>
@@ -44,6 +64,16 @@ export function ModelPanel({
           </p>
         )}
       </div>
+      {(state.text || latency) && (
+        <div className="mt-2 pt-2 border-t border-neutral-100 dark:border-neutral-800 flex items-center justify-between gap-2 text-[10px] text-neutral-500">
+          <span>
+            {chars > 0 && <>{chars.toLocaleString()} chars</>}
+            {chars > 0 && latency && <> · </>}
+            {latency && <>{latency}</>}
+          </span>
+          {state.text && <CopyButton text={state.text} label={`Copy ${PROVIDER_LABELS[provider]} answer`} />}
+        </div>
+      )}
     </div>
   );
 }
