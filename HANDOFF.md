@@ -3,7 +3,19 @@
 > Updated after every completed task. Read this first to resume work in a new session — it captures volatile state that `CLAUDE.md` doesn't (CLAUDE.md is stable architecture; this is "where are we right now").
 
 **Last updated:** 2026-05-24
-**Last action:** Fixed GHSA-qx2v-qp2m-jg93 (postcss XSS via unescaped `</style>` in CSS stringify, moderate) reported by Dependabot. Vulnerable transitive `postcss <8.5.10` came in via `next`. Added a pnpm override in `pnpm-workspace.yaml`:
+**Last action:** Added **Re-synthesize** feature so failed/missing synth answers on historical entries can be regenerated against current saved fan-out answers.
+
+**New / changed:**
+- `src/app/api/resynthesize/route.ts` — POST with `{ id, synthesizerId? }`. Reads history row via `getHistoryEntry()`, reuses project's system prompt if applicable, builds `synthInput: FanOutAnswer[]` from saved per-provider text/errors, streams synth via SSE (same events as `/api/ask`), then `updateHistorySynth()` writes back synth_text/synth_error in place.
+- `src/lib/history.ts` — added `getHistoryEntry(id)` and `updateHistorySynth(id, synthText, synthError)`.
+- `src/components/SynthesizerPanel.tsx` — accepts optional `onResynthesize`, `resynthDisabled`. Renders a `↻ Re-synthesize` button left of the StatusBadge when `onResynthesize` is provided. Disabled while synth is in-flight.
+- `src/app/page.tsx` — `handleResynthesize()` calls the new route, streams events through existing reducer (re-uses synth-open / synth-delta / synth-done / error handlers), triggers `history-refresh` on settle. `viewingHistory = state.selectedHistoryId !== null` gates the button. `showSynth` also true when viewing history (so the panel is available even if synthesizer toggle is off). `synthInFlight` flag prevents double-clicks during streaming.
+
+Behavior: button only appears when a history entry is loaded. Works for any past entry — successful, errored, or null-synth. Uses the *currently-selected* synthesizer model; the new synth_text is saved to the DB and the sidebar refreshes to reflect it.
+
+**Previously:** Groq decommissioned `qwen-qwq-32b` — user's synthesizer surfaced "The model has been decommissioned and is no longer supported." Removed `qwen-qwq` from `SYNTHESIZER_OPTIONS` in `src/lib/synthesizer-options.ts` and changed `DEFAULT_SYNTHESIZER_ID` to `deepseek-r1-distill`. Added a stale-ID guard in `page.tsx` — if `localStorage["apex.synthesizer-id"]` references an option that no longer exists, fall back to default at boot. New queries will synthesize fine; **historical entries where the QwQ synth failed remain broken** (their `synth_text` is null in the DB) — would need a "Re-synthesize" button to rerun on saved fan-out answers.
+
+**Previously:** Fixed GHSA-qx2v-qp2m-jg93 (postcss XSS via unescaped `</style>` in CSS stringify, moderate) reported by Dependabot. Vulnerable transitive `postcss <8.5.10` came in via `next`. Added a pnpm override in `pnpm-workspace.yaml`:
 
 ```yaml
 overrides:

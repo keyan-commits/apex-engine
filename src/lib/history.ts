@@ -109,3 +109,43 @@ export function listHistory(
 export function deleteHistoryEntry(id: number): void {
   db().prepare("DELETE FROM history WHERE id = ?").run(id);
 }
+
+export function getHistoryEntry(id: number): HistoryEntry | null {
+  const row = db()
+    .prepare(
+      `SELECT id, created_at, prompt, answers_json, synth_text, synth_error, project_id
+       FROM history WHERE id = ?`,
+    )
+    .get(id) as
+    | {
+        id: number;
+        created_at: number;
+        prompt: string;
+        answers_json: string;
+        synth_text: string | null;
+        synth_error: string | null;
+        project_id: number | null;
+      }
+    | undefined;
+
+  if (!row) return null;
+  return {
+    id: row.id,
+    createdAt: row.created_at,
+    prompt: row.prompt,
+    answers: JSON.parse(row.answers_json) as Record<Provider, HistoryAnswer>,
+    synthText: row.synth_text,
+    synthError: row.synth_error,
+    projectId: row.project_id,
+  };
+}
+
+export function updateHistorySynth(
+  id: number,
+  synthText: string | null,
+  synthError: string | null,
+): void {
+  db()
+    .prepare(`UPDATE history SET synth_text = ?, synth_error = ? WHERE id = ?`)
+    .run(synthText, synthError, id);
+}

@@ -13,6 +13,7 @@ import { PROVIDERS, type Provider } from "@/lib/providers";
 import { parseSse, type SseEvent } from "@/lib/sse";
 import {
   DEFAULT_SYNTHESIZER_ID,
+  SYNTHESIZER_OPTIONS,
   findSynthesizer,
 } from "@/lib/synthesizer-options";
 
@@ -205,9 +206,11 @@ export default function Home() {
   });
   const [synthesizerId, setSynthesizerId] = useState<string>(() => {
     if (typeof window === "undefined") return DEFAULT_SYNTHESIZER_ID;
-    return (
-      window.localStorage.getItem(SYNTHESIZER_ID_KEY) ?? DEFAULT_SYNTHESIZER_ID
-    );
+    const stored =
+      window.localStorage.getItem(SYNTHESIZER_ID_KEY) ?? DEFAULT_SYNTHESIZER_ID;
+    return SYNTHESIZER_OPTIONS.some((o) => o.id === stored)
+      ? stored
+      : DEFAULT_SYNTHESIZER_ID;
   });
   const [settingsOpen, setSettingsOpen] = useState(false);
 
@@ -247,8 +250,36 @@ export default function Home() {
     }
   }
 
+  async function handleResynthesize() {
+    if (state.selectedHistoryId == null) return;
+    try {
+      const res = await fetch("/api/resynthesize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: state.selectedHistoryId,
+          synthesizerId,
+        }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      for await (const event of parseSse(res)) {
+        dispatch({ kind: "sse", event });
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      dispatch({ kind: "history-refresh" });
+    }
+  }
+
+  const viewingHistory = state.selectedHistoryId !== null;
+  const synthInFlight =
+    state.synth.status === "open" || state.synth.status === "streaming";
   const showSynth =
-    synthesizerEnabled || state.synth.text || state.synth.error;
+    synthesizerEnabled ||
+    state.synth.text ||
+    state.synth.error ||
+    viewingHistory;
 
   return (
     <div className="min-h-screen bg-neutral-50 dark:bg-neutral-950 text-neutral-900 dark:text-neutral-100 flex">
@@ -312,6 +343,8 @@ export default function Home() {
             <SynthesizerPanel
               state={state.synth}
               synthesizerLabel={findSynthesizer(synthesizerId).label}
+              onResynthesize={viewingHistory ? handleResynthesize : undefined}
+              resynthDisabled={synthInFlight}
             />
           )}
         </div>

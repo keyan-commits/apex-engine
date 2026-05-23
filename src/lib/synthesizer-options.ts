@@ -14,18 +14,11 @@ export type SynthesizerOption = {
 
 export const SYNTHESIZER_OPTIONS: readonly SynthesizerOption[] = [
   {
-    id: "qwen-qwq",
-    label: "Qwen QwQ 32B (Groq)",
-    provider: "groq",
-    model: "qwen-qwq-32b",
-    note: "Reasoning-tuned, neutral judge, free (default)",
-  },
-  {
     id: "deepseek-r1-distill",
     label: "DeepSeek-R1-Distill 70B (Groq)",
     provider: "groq",
     model: "deepseek-r1-distill-llama-70b",
-    note: "Reasoning, 70B params, free",
+    note: "Reasoning-tuned, neutral judge, 70B params, free (default)",
   },
   {
     id: "claude-sonnet",
@@ -50,7 +43,7 @@ export const SYNTHESIZER_OPTIONS: readonly SynthesizerOption[] = [
   },
 ] as const;
 
-export const DEFAULT_SYNTHESIZER_ID = "qwen-qwq";
+export const DEFAULT_SYNTHESIZER_ID = "deepseek-r1-distill";
 
 export function findSynthesizer(id: string | undefined): SynthesizerOption {
   return (
