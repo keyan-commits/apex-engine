@@ -3,7 +3,20 @@
 > Updated after every completed task. Read this first to resume work in a new session — it captures volatile state that `CLAUDE.md` doesn't (CLAUDE.md is stable architecture; this is "where are we right now").
 
 **Last updated:** 2026-05-24
-**Last action:** Added **MCP server** so Claude Code (or any MCP client) can invoke apex-engine as a tool.
+**Last action:** Verified Groq catalog before swapping synthesizer (user explicitly asked to stop guessing). Research dispatch fetched live `console.groq.com/docs/models` and `/docs/deprecations`. Both prior picks confirmed decommissioned (`qwen-qwq-32b` 2025-07-14, `deepseek-r1-distill-llama-70b` 2025-10-02). Groq's own migration table for both → `openai/gpt-oss-120b`. Sanity-checked with a real API call (`curl ... model: openai/gpt-oss-120b ... Respond with exactly PONG`) — returned `PONG` cleanly with reasoning in a separate `reasoning` field (so the `stripThinkTags()` wrapper is a no-op for this model — kept anyway as a safety net).
+
+**Swap:** `synthesizer-options.ts` updated to current Groq catalog. New options:
+1. `gpt-oss-120b` (Groq, OpenAI open-weights, 131K ctx) — **default**
+2. `gpt-oss-20b` (Groq, smaller sibling) — fallback
+3. `claude-sonnet` (unchanged — Claude Code path)
+4. `gpt-4o-mini` (unchanged — GitHub Models)
+5. `gemini-flash` (unchanged — AI Studio)
+
+Removed: `deepseek-r1-distill` (decommissioned). The stale-ID guard added previously falls back to `gpt-oss-120b` when localStorage still references a removed option, so users won't see broken state.
+
+Added a comment in `synthesizer-options.ts` documenting Groq's catalog churn and listing the graveyard so future-Claude doesn't fall into the same trap. Re-verification needed when models start 429'ing or returning decommissioned errors.
+
+**Previously:** Added MCP server so Claude Code (or any MCP client) can invoke apex-engine as a tool.
 
 **Files:**
 - `src/mcp/server.ts` — boots `McpServer` over stdio, exposes two tools:
