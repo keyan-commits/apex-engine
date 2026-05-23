@@ -3,188 +3,144 @@
 > Updated after every completed task. Read this first to resume work in a new session — it captures volatile state that `CLAUDE.md` doesn't (CLAUDE.md is stable architecture; this is "where are we right now").
 
 **Last updated:** 2026-05-24
-**Last action:** Shipped a 25-feature compounding-improvements pass driven by `apex_synthesize` for design questions. Phases A-E:
+**Last action:** Shipped a six-wave, 100-feature compounding-improvements pass driven by `apex_fanout` + `apex_synthesize` cross-checks at each architectural fork.
 
-- **Foundation:** Vitest (`pnpm test:run`, 48 tests, all passing), `src/lib/log.ts` (level-aware logger), `src/lib/errors.ts` (`classifyError`/`userFacingMessage` — maps 401/403/429/timeout/abort/network/server/unknown), expanded `SseEvent` union (`warning`, `cancelled`, `history-saved`, `latencyMs` on `done`/`synth-done`, `role` on `open`), `encodeSse()` helper.
-- **Abort + timeout:** `req.signal` threaded through `fanOut`, `synthesize`, `streamText`'s native `abortSignal`. Per-provider 90s timeout via `AbortSignal.timeout()` + `AbortSignal.any()`. Claude Agent SDK is best-effort (breaks loop on abort; upstream HTTP may still complete — documented limitation since we cannot use the standard `@anthropic-ai/sdk` without giving up the free-Claude property).
-- **History:** new columns `cancelled` / `synthesizer_id` / `total_latency_ms` / `ensemble_id` / `roles_json` + per-provider `latencyMs` inside `answers_json`. Probe-and-migrate pattern (same shape as the `project_id` fix).
-- **UX:** Stop button replaces Submit while streaming, Esc shortcut, copy buttons on every panel, char + latency footer, `React.memo` + rAF-coalesced `Markdown` to kill streaming re-render thrash, dismissable warning banner (saveHistory errors no longer silently swallowed).
-- **Roles / Mixture of Roles ("super AI" feature):** new `src/lib/roles.ts` with 10 roles (Developer, QA, Architect, Analyst, Reviewer, PM, Security, Researcher, Devil's Advocate, Teacher) and 5 named ensembles (None, Code Review, Research, Decision, Brainstorm). Each ensemble maps Provider → Role; the role's `suffix` is appended to the per-provider system prompt. Synthesizer prompt now labels each answer with its role (e.g., `### Claude (Architect) responded:`) and gets a preamble explaining the lenses. New `EnsemblePicker` header chip with role-mapping preview; selection persists in localStorage as `apex.ensemble-id`. `ModelPanel` shows the role badge. History persists `ensemble_id` and `roles_json` so old entries display correctly.
-- **Docs:** README and HANDOFF refreshed.
+## What's in apex-engine today
 
-**Verification done:**
+Stack: Next.js 15 + React 19 + TS5 + Tailwind v4 · Vercel AI SDK v6 (`@ai-sdk/openai-compatible`, `@ai-sdk/google`, `@ai-sdk/groq`) · `@anthropic-ai/claude-agent-sdk` 0.3 (via Claude Code OAuth) · better-sqlite3 12 · Vitest 4 · MCP SDK 1 · unpdf 1.
 
-- `pnpm type-check` clean.
-- `pnpm build` clean (52 kB page bundle, 154 kB First Load JS).
-- `pnpm test:run` — 48 tests across 6 files, all passing (tiers / synthesizer-options / errors / sse / roles / smoke).
-- Live `curl -N` against `/api/ask` on the dev server returned the new typed event shape with `role` and `latencyMs` populated. The ensemble `decision` correctly produced `claude=architect / openai=analyst / llama=devil / gemini=pm`, persisted to `history.ensemble_id` and `history.roles_json`.
-- MCP server (`./bin/apex-engine-mcp`) boots and responds to `initialize` JSON-RPC over stdio.
+**Capabilities:**
 
-**Blocked on:** Nothing. Branch has uncommitted changes ready for review; user can commit when satisfied. The MCP server already has the env-loading fix from the previous session and is fully working.
+- **Fan-out (4 models)** — Claude, GPT-4o-mini (GitHub Models), Llama 3.3 70B (Groq), Gemini 2.5 Flash (AI Studio) — streamed in parallel.
+- **Mixture-of-Roles ensembles** — 20 roles × 9 ensembles (None / Code Review / Research / Decision / Brainstorm / Legal / Medical / Marketing / Decompose) assign each model a distinct lens. Role suffix is appended to per-provider system prompt; synth prompt is role-aware.
+- **Sub-agents (planner-executor)** — Decompose ensemble: gpt-oss-120b planner with JSON-schema-enforced output produces ≤3 sub-questions in a depth-≤2 DAG, each runs as a mini fan-out (gpt-4o-mini + Llama with a mini-synth via gpt-oss-120b), final synth combines. Persisted to `history.subagent_tree_json`.
+- **Attachments** — images (png/jpg/gif/webp), text/markdown, PDF (via unpdf). Multipart upload, magic-number validation, EXIF-strip-able, max 10 MB × 5 files. Multimodal providers get image bytes; Llama gets a one-shot gpt-4o-mini description cached by sha256.
+- **Synthesizer styles** — default / terse / detailed / bulleted / essay (suffix appended to synth prompt).
+- **Prompt templates** — 7 built-ins (bug-report, decision-memo, code-review, research-summary, explain-to-pro, compare, plan).
+- **Cache** — SHA-256 keyed response cache for fan-out + synth (with answer-signature). Synth cache invalidates when any fan-out text changes. Cache hits show "cached" badge with latencyMs=0.
+- **Per-provider toggle** — disable any slot from Settings; disabled providers render grayed with explanation.
+- **Eco mode** — Settings toggle: disables Claude (saves Max-5x), forces gpt-oss-20b synth.
+- **Threaded history** — `history.parent_id`; "Continue thread" button injects prior Q+best-answer (depth cap 5) as context.
+- **Projects** — per-project system prompt applied to all four LLMs and the synth.
+- **History** — SQLite with FTS5 search (auto-sync triggers on INSERT/DELETE/UPDATE, bm25-ranked), pagination (50/page), star/unstar, tags (API: PATCH /api/history), bulk delete (shift-click + Delete N), export single entry as md/json, export all, attachment chips with image thumbnails on loaded entries.
+- **Abort / per-provider timeout** — req.signal threaded everywhere; AbortSignal.timeout(90s) per call; AbortSignal.any combines parent + timeout. Claude is best-effort (Agent SDK 0.3 has no native signal support).
+- **Code rendering** — react-syntax-highlighter (Prism + oneDark) for fenced code blocks with hover-reveal Copy button. Inline code stays as lightweight chips. Markdown component is React.memo + rAF-coalesced to kill streaming re-render thrash.
+- **Health + metrics** — /api/health pings each provider with a 1-token completion (memoized 30s); /api/metrics returns p50/p95/p99 total latency + per-provider success rate from the last 500 history rows; /api/stats returns today's query count + cache hits.
+- **/logs viewer** — server-rendered table of persisted logs (logger().warn/error inline-persists via `logs` table); filter by level.
+- **MCP server** — `apex_fanout` (with optional ensembleId), `apex_synthesize`, `apex_decompose` over stdio. Boots via `bin/apex-engine-mcp`.
+- **Keyboard** — Enter / Shift+Enter / Esc / "?" (shortcuts help) / Alt+1..5 (quick-switch ensembles).
+- **UX** — Stop button (replaces Submit while streaming), copy buttons on every panel, char + latency footer, char count + token estimate below ChatInput, dismissable warning banner, compact mode (header toggle).
 
-**Followups worth doing later (not blocking):**
+**Tests:** 10 files, 84 tests. Covers tiers, synthesizer-options, errors, sse, roles, attachments, retry, cache, cost, tokens, templates, synth-styles, sub-agents DAG validation. `pnpm test:run`.
 
-- Surface ensemble + roles in `/api/resynthesize` (currently re-synthesizes with the historical roles already baked into `entry.answers[*].role` so the labels are correct, but the call path doesn't accept a new `ensembleId` — by design, since re-running with different roles would invalidate the saved fan-out answers).
-- Switch `roles_json` to a single `roles` JSON1 query if we ever want to filter history by ensemble (`WHERE json_extract(roles_json, '$.claude') = 'dev'`).
-- Add an MCP tool param `ensembleId` so Claude Code can invoke `apex_fanout` with `code-review` etc. Trivial — `roles.ts` already exports `findEnsemble`.
-- Per-provider timeout is fixed at 90s. Could expose in Settings.
-- Quota indicator in UI (still pending from earlier backlog).
-- Better-sqlite3 `BEGIN`/`COMMIT` block around the multi-`ALTER TABLE` migration if we ever ship a multi-user version.
+**Verification:** `pnpm type-check` clean, `pnpm test:run` 84/84, `pnpm build` clean (54.5 kB page, 155 kB First Load JS). MCP server boots and responds to initialize on stdio.
 
----
+**Deferred (low-leverage, can be picked up later):**
 
-**Previously:** Verified MCP server env-loading fix end-to-end. After Claude Code restart, called `apex_fanout` with `say PONG in one word` from inside Claude Code — all three providers responded cleanly. The `--env-file-if-exists=$DIR/.env.local` flag in `bin/apex-engine-mcp` is working as intended.
+- Custom user-defined roles via Settings UI — users can edit `src/lib/roles.ts` directly.
+- Theme override (light/dark/auto) — Tailwind v4 needs CSS variable surgery; auto dark mode works fine.
+- Per-provider temperature / maxTokens sliders — wiring through engine + all call sites is non-trivial; Settings UI is mocked but disabled.
+- Tag-input UI in HistorySidebar — API supports tags via `PATCH /api/history { id, tags: [] }`.
+- Synth pre-flight prompt preview — debugging aid; not user-facing.
 
-**Previously:** Fixed MCP server env loading. First test call of `apex_fanout` from Claude Code returned "Unauthorized" / "API key missing" errors for all three providers — Next.js auto-loads `.env.local` for `pnpm dev`, but the MCP launcher invokes `tsx src/mcp/server.ts` directly, outside the Next.js boot path, so provider SDKs saw an empty env. Fix: `bin/apex-engine-mcp` now passes `--env-file-if-exists=$DIR/.env.local` to tsx (Node 22.7+ built-in, user is on Node 24.11). Verified `GROQ_API_KEY`, `GITHUB_MODELS_TOKEN`, `GOOGLE_GENERATIVE_AI_API_KEY` all populate in a tsx child process. No new dep.
+## Engineering decisions worth preserving
 
-**Previously:** Fixed Next.js hydration error in `HistorySidebar.tsx` — the delete `<button>` was nested inside the row-load `<button>` (invalid HTML, `button-in-button`). Restructured: outer wrapper is now a `div` with `flex items-stretch`, the load-row button and delete button are siblings inside it. Same UX (hover-reveal delete via `group-hover`), valid HTML.
+1. **Sub-agents lead = gpt-oss-120b** (Groq), not Claude. Cross-check consensus: planning is short reasoning, Claude is overkill, Max-5x is precious. JSON-schema enforced via `generateObject` (zod schema).
+2. **Llama image fallback = describe-pass via gpt-4o-mini, cached by sha256**. Claude's review caught the trap with synthetic-marker-only — Llama hallucinates on missing visuals. The describe cache is 30-day TTL.
+3. **Tree storage in one history row** (`subagent_tree_json`) rather than separate rows linked by parent_id. Avoids polluting the sidebar with sub-fan-out rows.
+4. **PDF via unpdf**, not pdf-parse (unmaintained) or pdfjs-dist (browser-shaped).
+5. **Cache key includes attachment signature**. Otherwise the same prompt with different attached files would hit the cache wrongly.
+6. **Claude abort is best-effort** — Agent SDK 0.3 has no AbortSignal. Living with the limitation (we'd lose the free-Claude-via-Claude-Code-OAuth property if we switched to `@anthropic-ai/sdk`).
+7. **Multipart for /api/ask** when attachments are present; JSON otherwise (MCP server + scripts).
+8. **Disabled providers render grayed, not hidden** — Claude's UX review caught "is it broken?" confusion.
+9. **Auto-detect ensemble is a trap** — explicit "Decompose" preset instead. Per Claude review.
+10. **Persistent logs (logs table) only for warn/error** — single-user low-volume; inline writes are fine, no async queue needed.
 
-**Previously:** Verified Groq catalog before swapping synthesizer (user explicitly asked to stop guessing). Research dispatch fetched live `console.groq.com/docs/models` and `/docs/deprecations`. Both prior picks confirmed decommissioned (`qwen-qwq-32b` 2025-07-14, `deepseek-r1-distill-llama-70b` 2025-10-02). Groq's own migration table for both → `openai/gpt-oss-120b`. Sanity-checked with a real API call — returned `PONG` cleanly with reasoning in a separate `reasoning` field (so the `stripThinkTags()` wrapper is a no-op for this model — kept anyway as a safety net).
-
-**Swap:** `synthesizer-options.ts` updated to current Groq catalog. New options:
-1. `gpt-oss-120b` (Groq, OpenAI open-weights, 131K ctx) — **default**
-2. `gpt-oss-20b` (Groq, smaller sibling) — fallback
-3. `claude-sonnet` (unchanged — Claude Code path)
-4. `gpt-4o-mini` (unchanged — GitHub Models)
-5. `gemini-flash` (unchanged — AI Studio)
-
-Removed: `deepseek-r1-distill` (decommissioned). The stale-ID guard added previously falls back to `gpt-oss-120b` when localStorage still references a removed option.
-
-**Previously:** Added MCP server so Claude Code (or any MCP client) can invoke apex-engine as a tool — `apex_fanout` and `apex_synthesize`. Boots cleanly, registered with Claude Code via `claude mcp add apex-engine -- /Users/nikoe/Development/Study/apex-engine/bin/apex-engine-mcp`.
-
-**Previously:** **Bug fix: history was silently never saving since the Projects feature landed.** `db()` init had `CREATE INDEX ... ON history(project_id)` in the same `d.exec()` block as `CREATE TABLE IF NOT EXISTS history` — on pre-existing DBs that didn't have `project_id` yet, the index creation threw "no such column", aborting the whole exec block before the `ALTER TABLE ADD COLUMN` migration ran. Fixed by splitting the migration probe into its own block and applying ALTERs one at a time (the new schema migrations follow this pattern).
-
-**Previously:** Added Re-synthesize feature so failed/missing synth answers on historical entries can be regenerated against current saved fan-out answers.
-
-**Previously:** Projects feature (named containers with system prompts applied to all 4 LLMs + synthesizer). History sidebar, keyboard fix, slot rename (deepseek→llama), GitHub Models for OpenAI slot, Gemini model fix (2.5-flash), synthesizer toggle, etc.
-
----
-
-## Project Goal (one paragraph)
-
-Local single-user web app. Fan one prompt out to 4 LLMs in parallel (Claude, GPT, Llama, Gemini), display each response side-by-side, then synthesize a "best answer" using a designated reasoning model. Mixture-of-Agents pattern. With **Ensembles**, each model can be assigned a distinct role (Architect / Analyst / Devil's Advocate / etc.) so the diversity is by design rather than by accident — Mixture-of-Roles on top of Mixture-of-Agents. Single-user/single-machine only (Claude path uses the local Claude Code OAuth, can't be deployed).
-
-## Stack (as of last update)
-
-| Component | Version |
-|---|---|
-| Next.js | 15.5.18 (App Router, RSC, Streaming) |
-| React | 19.2.6 |
-| TypeScript | 5.9.3 |
-| Tailwind | 4.3.0 + @tailwindcss/typography 0.5.19 |
-| @anthropic-ai/claude-agent-sdk | 0.3.148 |
-| ai (Vercel AI SDK) | 6.0.190 |
-| @ai-sdk/openai-compatible | 2.0.47 |
-| @ai-sdk/google | 3.0.79 |
-| @ai-sdk/groq | 3.0.39 |
-| better-sqlite3 | 12.10.0 |
-| react-markdown | 10.1.0 |
-| remark-gfm | 4.0.1 |
-| vitest | 4.1.7 |
-| @modelcontextprotocol/sdk | 1.29.0 |
-| zod | 4.4.3 |
-| tsx | 4.22.3 |
-| pnpm | 11.2.2 (via Node 24 corepack) |
-
-## Phase Status
-
-- [x] **Phase 0** — Skeleton
-- [x] **Phase 1** — Provider layer
-- [x] **Phase 2** — Engine / fan-out
-- [x] **Phase 3** — Synthesizer
-- [x] **Phase 4** — `/api/ask` SSE route
-- [x] **Phase 5** — UI
-- [x] **Phase 6** — Polish (abort, per-provider timeout, copy, latency, throttling, error UX, history sidebar)
-- [x] **Phase 7** — Roles / Ensembles (Mixture-of-Roles)
-- [x] **Phase 8** — Tests (Vitest, 48 tests across 6 files)
-
-## Commands
-
-```bash
-pnpm install
-pnpm dev            # http://localhost:3000
-pnpm build
-pnpm type-check
-pnpm test           # interactive
-pnpm test:run       # CI / one-shot
-pnpm test:ui        # browser
-pnpm lint
-pnpm mcp            # run MCP server directly
-```
-
-## File Layout (current)
+## File layout
 
 ```
 apex-engine/
-├── CLAUDE.MD
-├── HANDOFF.md
+├── CLAUDE.MD                            (stable architecture + standards)
+├── HANDOFF.md                            ← this file
 ├── README.md
 ├── package.json
 ├── pnpm-workspace.yaml
 ├── pnpm-lock.yaml
 ├── tsconfig.json
 ├── vitest.config.ts
-├── next.config.ts
-├── postcss.config.mjs
-├── .env.example
-├── .gitignore
 ├── bin/
-│   └── apex-engine-mcp                (shell launcher → tsx src/mcp/server.ts)
+│   └── apex-engine-mcp                   (env-file-loading tsx launcher)
 └── src/
     ├── app/
-    │   ├── layout.tsx
-    │   ├── page.tsx                   (reducer, AbortController, Esc, EnsemblePicker)
-    │   ├── globals.css
+    │   ├── layout.tsx, page.tsx, globals.css
+    │   ├── logs/page.tsx                 (server-rendered logs table)
     │   └── api/
-    │       ├── ask/route.ts           (SSE; signal threading; latency; cancelled)
-    │       ├── resynthesize/route.ts  (SSE; signal threading)
-    │       ├── history/route.ts
-    │       └── projects/route.ts
+    │       ├── ask/route.ts              (SSE; sub-agents path; multipart; cache)
+    │       ├── attachments/[sha256]/route.ts
+    │       ├── health/route.ts           (1-tok ping per provider, 30s cache)
+    │       ├── history/route.ts          (GET filters, PATCH star/tags, DELETE bulk)
+    │       ├── history/export/route.ts   (md/json single + all)
+    │       ├── metrics/route.ts          (p50/p95 + per-provider success)
+    │       ├── projects/route.ts
+    │       ├── resynthesize/route.ts     (now accepts styleId)
+    │       └── stats/route.ts            (today's count + cache hits)
     ├── components/
-    │   ├── ChatInput.tsx              (Stop button, Esc hint)
-    │   ├── CopyButton.tsx             (NEW)
-    │   ├── EnsemblePicker.tsx         (NEW)
-    │   ├── HistorySidebar.tsx
-    │   ├── Markdown.tsx               (memo + rAF coalescing)
-    │   ├── ModelPanel.tsx             (role badge, char/latency footer, copy)
+    │   ├── ChatInput.tsx                 (Stop, drag-drop, paste, file picker, template, token preview)
+    │   ├── CopyButton.tsx
+    │   ├── EnsemblePicker.tsx
+    │   ├── HistorySidebar.tsx            (FTS search, star, export, bulk-select, pagination)
+    │   ├── Markdown.tsx                  (syntax-highlight + inline copy + rAF coalesced)
+    │   ├── ModelPanel.tsx                (role badge, cached badge, latency footer, copy)
     │   ├── ProjectSelector.tsx
-    │   ├── Settings.tsx
+    │   ├── Settings.tsx                  (synth model + style + Eco + per-provider + health)
+    │   ├── ShortcutsHelp.tsx             (? key)
+    │   ├── StatsChip.tsx                 (today/cached)
     │   ├── StatusBadge.tsx
-    │   └── SynthesizerPanel.tsx       (latency footer, copy)
+    │   ├── SubagentsPanel.tsx            (Decompose tree view)
+    │   ├── SynthesizerPanel.tsx          (Continue thread, Re-synth, copy, latency)
+    │   └── TemplatePicker.tsx
     ├── lib/
-    │   ├── __tests__/                 (NEW: smoke, tiers, synthesizer-options, errors, sse, roles)
-    │   ├── engine.ts                  (signal + timeout + roles)
-    │   ├── errors.ts                  (NEW: classifyError / userFacingMessage)
-    │   ├── history.ts                 (cancelled/synthesizer_id/total_latency_ms/ensemble_id/roles_json)
-    │   ├── log.ts                     (NEW: leveled logger)
+    │   ├── __tests__/                    (10 test files, 84 tests)
+    │   ├── attachments.ts                (magic-number, EXIF, sha256-content-addressed)
+    │   ├── cache.ts                      (SQLite, sha256-keyed, TTL)
+    │   ├── cost.ts                       (per-model rates + estimate)
+    │   ├── engine.ts                     (fanOut + multimodal + describe-pass + abort + timeout)
+    │   ├── errors.ts                     (classifyError + Retry-After)
+    │   ├── history.ts                    (FTS5 + 11 columns + filters + tags + star)
+    │   ├── log.ts                        (level-aware + persists warn/error)
+    │   ├── logs.ts                       (telemetry table)
+    │   ├── multimodal.ts                 (per-provider message builders + unpdf)
     │   ├── projects.ts
     │   ├── providers.ts
-    │   ├── quota.ts
-    │   ├── roles.ts                   (NEW: ROLES + ENSEMBLES)
-    │   ├── sse.ts                     (typed event union + encodeSse + parseSse)
-    │   ├── synthesize.ts              (role-aware prompt + signal)
+    │   ├── quota.ts                      (tier downgrade + UTC reset)
+    │   ├── retry.ts                      (exp backoff + 4xx-aware)
+    │   ├── roles.ts                      (20 roles, 9 ensembles)
+    │   ├── sse.ts                        (typed event union + encode + parse)
+    │   ├── subagents.ts                  (decompose + DAG + executor + briefing)
+    │   ├── synth-styles.ts               (5 styles)
+    │   ├── synthesize.ts                 (role-aware, style-aware, signal-aware)
     │   ├── synthesizer-options.ts
-    │   └── tiers.ts
+    │   ├── templates.ts
+    │   ├── tiers.ts
+    │   └── tokens.ts
     └── mcp/
-        └── server.ts
+        └── server.ts                     (apex_fanout + apex_synthesize + apex_decompose)
 ```
 
-## Known Issues / Backlog
+## Commands
 
-- **Claude abort is best-effort.** Agent SDK 0.3.x has no `AbortSignal` support. Stopping mid-stream prevents the UI from showing more tokens but the upstream HTTP call may complete in the background. Switching to `@anthropic-ai/sdk` directly would fix this but would forfeit the free-Claude-via-Code-OAuth property. Decision: live with the limitation until the Agent SDK gains signal support.
-- **Per-provider timeout** is hard-coded at 90s in `engine.ts` (`DEFAULT_PROVIDER_TIMEOUT_MS`). Expose in Settings if needed.
-- **MCP server does not currently accept `ensembleId`.** Adding it is trivial; deferred.
-- **No quota status indicator** in UI; `quota.ts` tracks state but the UI doesn't surface it.
-- **Re-synthesize** uses the historical roles already encoded in saved `answers`; cannot apply a new ensemble (by design — different roles would invalidate the cached fan-out).
-- **CLAUDE.MD filename case** — exists as `CLAUDE.MD` (uppercase) on disk; macOS filesystem is case-insensitive so this doesn't matter functionally, but worth noting.
+```bash
+pnpm install
+pnpm dev               # http://localhost:3000
+pnpm build
+pnpm type-check
+pnpm test              # interactive
+pnpm test:run          # one-shot
+pnpm test:ui           # browser
+pnpm lint
+pnpm mcp               # run MCP server directly
+```
 
-## Convention — Update This File After Every Task
+## Convention
 
-After completing any meaningful task (file written, phase complete, bug fixed, dep added/removed, env change):
-1. Update **Last updated** (today's date).
-2. Update **Last action** (1–2 lines on what was just done).
-3. Update **Blocked on** if you're waiting on the user.
-4. Tick phase checkboxes if applicable.
-5. Add new entries under **Known Issues / Backlog** if you introduced them.
-
-If a session ends abruptly, the next Claude reads this file first to recover context.
+After completing any meaningful task: update **Last action**, tick relevant items, add new entries under **Deferred** if you introduced them. If a session ends abruptly, the next Claude reads this file first.

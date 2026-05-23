@@ -1,26 +1,61 @@
 # Apex Engine
 
-Local single-user web app that fans a prompt out to multiple LLMs in parallel, displays each answer side-by-side, and synthesizes a "best answer" using a designated reasoning model. **Mixture-of-Agents pattern, with optional Mixture-of-Roles on top.**
+Local single-user web app that fans a prompt out to multiple LLMs in parallel, displays each answer side-by-side, and synthesizes a "best answer" — with role assignment, sub-agent decomposition, attachments, and a response cache. **Mixture-of-Agents + Mixture-of-Roles.**
 
 ```
 prompt → [optional ensemble of roles] → fan-out (parallel) → 4 answers → synthesizer → best answer
                                                             ↘ all 4 displayed
+                                       ↘ or sub-agent decomposition → tree → synthesizer
 ```
 
 ## Features
 
-- **Fan-out** — Claude (Claude Agent SDK), GPT (GitHub Models), Llama (Groq), Gemini (AI Studio) — all streamed in parallel.
-- **Synthesizer** — neutral judge model combines all 4 answers into one consolidated reply. GPT-OSS 120B (Groq) by default; switchable via Settings.
-- **Ensembles / Roles** — assign each model a distinct role (Architect, QA, Analyst, Devil's Advocate, etc.) so the four perspectives are diverse by design. Pick a named ensemble from the header (Code Review, Research, Decision, Brainstorm) or run without roles. The synthesizer is role-aware: it weights perspectives according to each model's lens.
-- **Projects** — named containers with custom system prompts applied to all four LLMs + the synthesizer (à la Claude.ai Projects).
-- **Stop button + Esc** — abort mid-stream. Closing the tab also cancels in-flight calls (Vercel AI SDK paths cancel cleanly; Claude is best-effort).
-- **Per-provider timeout** — each LLM call has its own 90 s timeout so one hung provider can't block the synthesizer.
-- **Copy buttons** on every panel + synthesizer.
-- **Char count & latency** footer per panel.
-- **History** — every query persists to SQLite with all four answers + synthesizer output + ensemble + roles + latency; click any past entry to rehydrate. Re-synthesize button lets you regenerate the consolidated answer on saved fan-out responses.
-- **Per-query toggle** — disable the synthesizer for cheap one-shot questions.
-- **Tier-aware routing** — automatic provider downgrade on quota exhaustion (e.g., Gemini Pro → Flash with UTC daily reset).
-- **Tests** — 48 unit tests via Vitest covering tier resolution, error classification, SSE parsing, synthesizer options, and the role registry.
+### Intelligence
+- **Fan-out:** Claude (Claude Agent SDK), GPT (GitHub Models), Llama (Groq), Gemini (AI Studio) streamed in parallel.
+- **Synthesizer:** combines all four answers into one consolidated reply. GPT-OSS 120B (Groq) by default; switchable in Settings.
+- **Mixture-of-Roles:** 20 roles × 9 named ensembles (None / Code Review / Research / Decision / Brainstorm / Legal / Medical / Marketing / Decompose). Each role's instructions are appended to one model's system prompt; the synthesizer is role-aware and labels each contribution.
+- **Sub-agents (Decompose ensemble):** a planner (gpt-oss-120b with JSON schema) splits the question into ≤3 sub-questions in a depth-≤2 DAG. Each sub-question runs a mini fan-out (gpt-4o-mini + Llama, then mini-synth). A final synthesizer combines the tree.
+- **Synthesizer styles:** default / terse / detailed / bulleted / essay.
+- **Prompt templates:** 7 built-ins (bug report, decision memo, code review, research summary, explain to a pro, compare X vs Y, plan a project).
+
+### Attachments
+- Drag-drop, paste, or 📎 picker for images (png/jpg/gif/webp), text/markdown, and PDF (via `unpdf`). Up to 5 files × 10 MB each, magic-number validated.
+- Image-capable providers (Claude, GPT-4o-mini, Gemini) receive the bytes directly.
+- Llama (text-only) receives a once-per-image gpt-4o-mini description, cached by sha256 for 30 days — pennies once, then free.
+
+### Reliability + speed
+- **Response cache:** SQLite, sha256-keyed by `(kind, provider, model, role, systemPrompt, prompt, attachments-sig)`. Cache hits show "cached" badge with 0ms latency. Synth cache invalidates when any fan-out answer changes.
+- **Per-provider timeout:** 90 s via `AbortSignal.timeout` + `AbortSignal.any` combined with the request signal.
+- **Stop button + Esc:** abort all in-flight calls. Closing the tab also cancels. (Claude is best-effort — Agent SDK 0.3 has no native signal support yet.)
+- **Retry with exponential backoff:** `lib/retry.ts` — 4xx-aware, respects `Retry-After`.
+- **Health check:** Settings → "Check providers" pings each with a 1-token completion. Cached 30s.
+
+### Cost-aware
+- **Eco mode:** disables Claude (saves Max-5x), forces `gpt-oss-20b` synth.
+- **Per-provider on/off:** disable any slot from Settings. Disabled providers render grayed with reason.
+- **Token preview:** approximate token count below the chat input as you type.
+- **Daily stats chip:** today's query count + cache hits at the top of the page.
+- **/api/metrics:** p50/p95/p99 total latency + per-provider success rate.
+
+### History
+- Every query persists to SQLite with all answers, synth, ensemble, roles, attachments, latency.
+- **FTS5 search** with bm25 ranking and auto-sync triggers.
+- **Star / unstar** any entry; filter by starred only.
+- **Tags** via `PATCH /api/history { id, tags: [] }`.
+- **Threaded history:** `parent_id` + "Continue thread" button injects prior Q+best-answer as context.
+- **Bulk delete** via shift-click multi-select.
+- **Export** single entry or full archive as Markdown or JSON.
+- **Pagination** (50/page, "Load more").
+- **Re-synthesize** any historical entry with the currently-selected synth model + style.
+
+### UX
+- Stop button replaces Submit while streaming.
+- Esc keyboard shortcut to stop. `?` opens shortcuts help. `Alt+1..5` quick-switches ensembles.
+- Copy buttons on every panel + on every fenced code block (hover-reveal).
+- Code blocks render with Prism syntax highlighting (oneDark theme).
+- Char count + latency footer per panel; cached badge when from cache.
+- Dismissable warning banner — backend save failures and disconnects surface.
+- Compact mode toggle in header.
 
 ## Stack
 
@@ -28,8 +63,10 @@ prompt → [optional ensemble of roles] → fan-out (parallel) → 4 answers →
 - **Tailwind CSS v4** + `@tailwindcss/typography`
 - **Vercel AI SDK v6** with `@ai-sdk/openai-compatible`, `@ai-sdk/google`, `@ai-sdk/groq`
 - **`@anthropic-ai/claude-agent-sdk`** — Claude via local Claude Code OAuth (no Anthropic API key)
-- **SQLite** via `better-sqlite3`
-- **Vitest** for unit tests
+- **SQLite (FTS5)** via `better-sqlite3`
+- **react-syntax-highlighter** (Prism)
+- **unpdf** for PDF text extraction
+- **Vitest** — 10 test files, 84 tests
 - **pnpm** via Node corepack
 
 ## Setup
@@ -40,7 +77,7 @@ corepack enable pnpm
 pnpm install
 
 cp .env.example .env.local
-# Fill in the keys you have — each missing key just turns that panel red.
+# Fill in keys you have — each missing key just turns that panel red.
 
 pnpm dev
 # → http://localhost:3000
@@ -63,14 +100,14 @@ pnpm mcp             # run the MCP server directly
 
 | Provider | Get key | Cost |
 |---|---|---|
-| **Groq** (Llama slot + default synthesizer) | https://console.groq.com → API Keys | Free, 1000 RPD per model |
-| **GitHub Models** (GPT slot) | https://github.com/settings/personal-access-tokens/new — Account permissions → Models → Read-only | Free, ~150 RPD |
+| **Groq** (Llama + default synth + sub-agents planner) | https://console.groq.com → API Keys | Free, 1000 RPD per model |
+| **GitHub Models** (GPT slot + image describe-pass) | https://github.com/settings/personal-access-tokens/new — Account permissions → Models → Read-only | Free, ~150 RPD |
 | **Google AI Studio** (Gemini slot) | https://aistudio.google.com/apikey | Free daily quota |
-| **Claude** | Claude Code installed and authenticated on this machine | Uses your Claude Code OAuth — no separate key |
+| **Claude** | Claude Code installed and authenticated on this machine | Uses Claude Code OAuth — no separate key |
 
 ## Roles & Ensembles
 
-Click the **Ensemble** chip in the header to assign each model a distinct lens:
+The header **Ensemble** chip assigns each model a distinct lens. Each role's instructions are appended to that model's system prompt; the synthesizer labels each answer with its role and weights perspectives accordingly.
 
 | Ensemble | Claude | GPT | Llama | Gemini |
 |---|---|---|---|---|
@@ -79,49 +116,38 @@ Click the **Ensemble** chip in the header to assign each model a distinct lens:
 | **Research** | Researcher | Analyst | Devil's Advocate | Teacher |
 | **Decision** | Architect | Analyst | Devil's Advocate | PM |
 | **Brainstorm** | Developer | Architect | Devil's Advocate | Teacher |
+| **Legal** | Lawyer | Fact-Checker | Devil's Advocate | Debater |
+| **Medical** | Doctor | Scientist | Fact-Checker | Researcher |
+| **Marketing** | Marketer | Copywriter | Devil's Advocate | Analyst |
+| **Decompose** | (sub-agents) | (sub-agents) | (sub-agents) | (sub-agents) |
 
-Each role's instructions are appended to the model's system prompt. The synthesizer sees `### Claude (Architect) responded:`-style labels and is told that each answer reflects a specific lens, so its consolidation weights perspectives appropriately.
+Roles: Developer · QA · Architect · Analyst · Reviewer · PM · Security · Researcher · Devil's Advocate · Teacher · Lawyer · Doctor · Marketer · Scientist · Philosopher · Debater · Summarizer · Translator · Fact-Checker · Copywriter.
 
-Add or edit roles/ensembles in `src/lib/roles.ts`.
+Edit `src/lib/roles.ts` to add or change roles/ensembles.
 
 ## Caveats
 
-- **Single-user, single-machine only.** The Claude path uses local Claude Code OAuth; this app cannot be deployed publicly without swapping Claude to AWS Bedrock or the Anthropic Console API.
-- **Synthesizer cost** — every query is 5 LLM calls (4 fan-out + 1 synthesizer). Toggle off for cheap queries; switch synthesizer in Settings.
-- **Reasoning models** — Qwen QwQ and DeepSeek-R1-Distill emit `<think>…</think>` blocks. A streaming scrubber in `synthesize.ts` discards them live.
-- **Stopping Claude is best-effort.** Claude Agent SDK 0.3.x doesn't accept an `AbortSignal`, so pressing Stop / Esc / closing the tab will halt the UI but the upstream Claude HTTP call may still complete in the background. The other three providers cancel cleanly via `streamText({ abortSignal })`.
+- **Single-user, single-machine only.** Claude uses local Claude Code OAuth; this app cannot be deployed publicly without swapping Claude to AWS Bedrock or the Anthropic Console API.
+- **Stopping Claude is best-effort.** Claude Agent SDK 0.3.x doesn't accept `AbortSignal`. Pressing Stop / Esc / closing the tab will halt the UI, but the upstream Claude HTTP call may still complete. Other three providers cancel cleanly.
+- **Legal / Medical ensembles are not professional advice.** Role suffixes include explicit disclaimers.
 
 ## Use From Claude Code (MCP server)
 
-Apex Engine also ships as an **MCP (Model Context Protocol) server**, so Claude Code (or Claude Desktop, or any MCP client) can invoke it as a tool — e.g. *"use apex-engine to fan this question out to GPT, Llama, and Gemini and tell me what they all say."*
+Apex ships as an MCP server. Claude Code, Claude Desktop, or any MCP client can invoke it as a tool.
 
-**Tools exposed:**
+**Tools:**
 
-- `apex_fanout({ prompt, includeClaude? })` — parallel queries to all configured providers, returns each answer labeled.
-- `apex_synthesize({ prompt, includeClaude?, synthesizerId? })` — fan-out plus a synthesized "best answer" via Mixture-of-Agents.
+- `apex_fanout({ prompt, includeClaude?, ensembleId? })` — parallel queries; optional role ensemble.
+- `apex_synthesize({ prompt, includeClaude?, synthesizerId? })` — fan-out plus a synthesized "best answer".
+- `apex_decompose({ prompt })` — sub-agent decomposition (planner + mini fan-outs + briefing).
 
-**Setup with Claude Code:**
+**Setup:**
 
 ```bash
-# from anywhere
 claude mcp add apex-engine -- /Users/nikoe/Development/Study/apex-engine/bin/apex-engine-mcp
 ```
 
-Or edit `~/.claude.json` / project `.claude/mcp.json` manually:
-
-```json
-{
-  "mcpServers": {
-    "apex-engine": {
-      "command": "/absolute/path/to/apex-engine/bin/apex-engine-mcp"
-    }
-  }
-}
-```
-
-The launcher script sets cwd to the project root and passes `--env-file-if-exists=$DIR/.env.local` to tsx so it reads the same env as `pnpm dev` and shares the SQLite history DB — MCP queries appear in the web app's history sidebar.
-
-**Recursion note:** `includeClaude` defaults to `false` in MCP mode because invoking apex-engine *from* Claude Code while routing the Claude slot through Claude Agent SDK creates a self-call. Set `includeClaude: true` explicitly if you want it anyway.
+`bin/apex-engine-mcp` passes `--env-file-if-exists=$DIR/.env.local` to tsx, so it reads the same env as `pnpm dev` and shares the SQLite history DB — MCP queries appear in the sidebar.
 
 ## Architecture
 
@@ -129,19 +155,32 @@ The launcher script sets cwd to the project root and passes `--env-file-if-exist
 |---|---|
 | Provider registry & tier ladder | `src/lib/providers.ts` |
 | Quota tracker (SQLite, UTC daily reset) | `src/lib/quota.ts` |
-| Tier resolution per call | `src/lib/tiers.ts` |
-| Fan-out engine (4 parallel streams, abort + timeout) | `src/lib/engine.ts` |
-| Synthesizer (multi-provider, role-aware, scrubs `<think>`) | `src/lib/synthesize.ts` |
-| Synthesizer options registry | `src/lib/synthesizer-options.ts` |
+| Tier resolution | `src/lib/tiers.ts` |
+| Fan-out engine (signal + timeout + roles + attachments + describe-pass) | `src/lib/engine.ts` |
+| Multimodal message builder (AI SDK + Claude Agent SDK content shapes) | `src/lib/multimodal.ts` |
+| Synthesizer (role + style aware, scrubs `<think>`) | `src/lib/synthesize.ts` |
 | Roles & ensembles | `src/lib/roles.ts` |
+| Sub-agents planner / DAG / executor | `src/lib/subagents.ts` |
+| Response cache | `src/lib/cache.ts` |
+| Attachment storage (content-addressed) | `src/lib/attachments.ts` |
+| History (FTS5, 13 columns) | `src/lib/history.ts` |
+| Telemetry table | `src/lib/logs.ts` |
+| Logger | `src/lib/log.ts` |
 | Error classification | `src/lib/errors.ts` |
-| Structured logger | `src/lib/log.ts` |
-| Persistence: history, projects | `src/lib/history.ts`, `src/lib/projects.ts` |
-| SSE event union + parser + encoder | `src/lib/sse.ts` |
-| SSE multiplex route | `src/app/api/ask/route.ts` |
-| Re-synthesize route | `src/app/api/resynthesize/route.ts` |
-| Projects CRUD route | `src/app/api/projects/route.ts` |
-| History CRUD route | `src/app/api/history/route.ts` |
+| Retry with backoff | `src/lib/retry.ts` |
+| Token estimation | `src/lib/tokens.ts` |
+| Cost rates + estimation | `src/lib/cost.ts` |
+| SSE event union + encode + parse | `src/lib/sse.ts` |
+| `/api/ask` SSE multiplex (fan-out OR sub-agents path) | `src/app/api/ask/route.ts` |
+| `/api/resynthesize` | `src/app/api/resynthesize/route.ts` |
+| `/api/history` (GET filters / PATCH / DELETE bulk) | `src/app/api/history/route.ts` |
+| `/api/history/export` | `src/app/api/history/export/route.ts` |
+| `/api/attachments/[sha256]` | `src/app/api/attachments/[sha256]/route.ts` |
+| `/api/health` | `src/app/api/health/route.ts` |
+| `/api/metrics` (latency percentiles + per-provider success rate) | `src/app/api/metrics/route.ts` |
+| `/api/stats` | `src/app/api/stats/route.ts` |
+| `/api/projects` | `src/app/api/projects/route.ts` |
+| `/logs` viewer | `src/app/logs/page.tsx` |
 | MCP server | `src/mcp/server.ts` (entry `bin/apex-engine-mcp`) |
 | UI components | `src/components/` |
 | Tests | `src/lib/__tests__/` |

@@ -78,7 +78,7 @@ ${prompt}`,
   }
 }
 
-function validateDag(
+export function validateDag(
   qs: Array<{ id: number; text: string; depends_on: number[] }>,
 ):
   | { ok: true }

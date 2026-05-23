@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { estimateTokens, formatTokens } from "@/lib/tokens";
 import { TemplatePicker } from "./TemplatePicker";
 
 const MAX_FILES = 5;
@@ -223,6 +224,14 @@ export function ChatInput({
             />
           </button>
           <span className="select-none">Synthesize</span>
+          {value.trim() && (
+            <span
+              className="text-[10px] text-neutral-400 font-mono"
+              title="Approximate (chars/4 heuristic)"
+            >
+              ~{formatTokens(estimateTokens(value))}
+            </span>
+          )}
         </div>
         {streaming ? (
           <button

@@ -15,12 +15,15 @@ export async function POST(req: Request) {
   const body = (await req.json().catch(() => null)) as {
     id?: unknown;
     synthesizerId?: unknown;
+    styleId?: unknown;
   } | null;
   const id = typeof body?.id === "number" ? body.id : null;
   const synthesizerId =
     body && typeof body.synthesizerId === "string"
       ? body.synthesizerId
       : undefined;
+  const styleId =
+    body && typeof body.styleId === "string" ? body.styleId : undefined;
 
   if (id == null) {
     return new Response(JSON.stringify({ error: "missing id" }), {
@@ -88,6 +91,7 @@ export async function POST(req: Request) {
             systemPrompt,
             synthesizerId,
             signal,
+            styleId,
           })) {
             synthText += chunk;
             send({ type: "synth-delta", text: chunk });
