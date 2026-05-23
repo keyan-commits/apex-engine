@@ -54,6 +54,38 @@ pnpm dev
 - **Synthesizer cost** — every query is 5 LLM calls (4 fan-out + 1 synthesizer). Toggle off for cheap queries; switch synthesizer in Settings.
 - **Reasoning models** — Qwen QwQ and DeepSeek-R1-Distill emit `<think>…</think>` blocks. A streaming scrubber in `synthesize.ts` discards them live.
 
+## Use From Claude Code (MCP server)
+
+Apex Engine also ships as an **MCP (Model Context Protocol) server**, so Claude Code (or Claude Desktop, or any MCP client) can invoke it as a tool — e.g. *"use apex-engine to fan this question out to GPT, Llama, and Gemini and tell me what they all say."*
+
+**Tools exposed:**
+
+- `apex_fanout({ prompt, includeClaude? })` — parallel queries to all configured providers, returns each answer labeled.
+- `apex_synthesize({ prompt, includeClaude?, synthesizerId? })` — fan-out plus a synthesized "best answer" via Mixture-of-Agents.
+
+**Setup with Claude Code:**
+
+```bash
+# from anywhere
+claude mcp add apex-engine -- /Users/nikoe/Development/Study/apex-engine/bin/apex-engine-mcp
+```
+
+Or edit `~/.claude.json` / project `.claude/mcp.json` manually:
+
+```json
+{
+  "mcpServers": {
+    "apex-engine": {
+      "command": "/absolute/path/to/apex-engine/bin/apex-engine-mcp"
+    }
+  }
+}
+```
+
+The launcher script sets cwd to the project root, so it reads `.env.local` and shares the same SQLite history DB as the web app — MCP queries appear in the sidebar.
+
+**Recursion note:** `includeClaude` defaults to `false` in MCP mode because invoking apex-engine *from* Claude Code while routing the Claude slot through Claude Agent SDK creates a self-call. Set `includeClaude: true` explicitly if you want it anyway.
+
 ## Architecture
 
 | Layer | Where |
@@ -66,8 +98,10 @@ pnpm dev
 | Synthesizer options registry | `src/lib/synthesizer-options.ts` |
 | Persistence: history, projects | `src/lib/history.ts`, `src/lib/projects.ts` |
 | SSE multiplex route | `src/app/api/ask/route.ts` |
+| Re-synthesize route | `src/app/api/resynthesize/route.ts` |
 | Projects CRUD route | `src/app/api/projects/route.ts` |
 | History CRUD route | `src/app/api/history/route.ts` |
+| MCP server | `src/mcp/server.ts` (entry `bin/apex-engine-mcp`) |
 | UI components | `src/components/` |
 
 See `CLAUDE.md` for project conventions and engineering standards.

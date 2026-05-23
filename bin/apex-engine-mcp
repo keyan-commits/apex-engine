@@ -1,0 +1,9 @@
+#!/bin/sh
+# apex-engine MCP server launcher.
+# Invokes the TypeScript server via the project-local tsx loader so we don't
+# need a build step. Sets cwd to the project root so SQLite data files land
+# in apex-engine/data/ regardless of where Claude Code spawns this from.
+set -e
+DIR="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$DIR"
+exec "$DIR/node_modules/.bin/tsx" "$DIR/src/mcp/server.ts" "$@"

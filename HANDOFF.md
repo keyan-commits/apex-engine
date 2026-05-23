@@ -3,7 +3,28 @@
 > Updated after every completed task. Read this first to resume work in a new session — it captures volatile state that `CLAUDE.md` doesn't (CLAUDE.md is stable architecture; this is "where are we right now").
 
 **Last updated:** 2026-05-24
-**Last action:** **Bug fix: history was silently never saving since the Projects feature landed.** `db()` init in `src/lib/history.ts` had `CREATE INDEX ... ON history(project_id)` *inside the same `d.exec()` block* as `CREATE TABLE IF NOT EXISTS history` — on pre-existing DBs that didn't have `project_id` yet, the index creation threw "no such column", aborting the whole exec block *before* the `ALTER TABLE ADD COLUMN` migration ran. Every subsequent `db()` call re-threw. `saveHistory()` calls in `/api/ask/route.ts` were wrapped in `try { ... } catch { console.error }` — so the failure was invisible to the user; their queries completed in the UI but nothing persisted. User had 0 history rows in the DB.
+**Last action:** Added **MCP server** so Claude Code (or any MCP client) can invoke apex-engine as a tool.
+
+**Files:**
+- `src/mcp/server.ts` — boots `McpServer` over stdio, exposes two tools:
+  - `apex_fanout({ prompt, includeClaude? })` — parallel queries to GPT/Llama/Gemini (+ Claude if `includeClaude: true`), returns each answer formatted.
+  - `apex_synthesize({ prompt, includeClaude?, synthesizerId? })` — fan-out + synthesized best answer (Mixture-of-Agents).
+- `bin/apex-engine-mcp` — shell launcher; `cd`s to project root (so `.env.local` and `data/apex.db` resolve correctly), exec's local `node_modules/.bin/tsx src/mcp/server.ts`. Made executable.
+- `package.json` — added `"bin": { "apex-engine-mcp": "./bin/apex-engine-mcp" }` and `"mcp"` npm script.
+
+**Deps installed:** `@modelcontextprotocol/sdk@1.29.0`, `zod@4.4.3`, `tsx@4.22.3`. `tsx` is a runtime dep (not devdep) because the bin launcher uses it.
+
+**Key design choices:**
+- Tools default `includeClaude: false` — invoking apex-engine from Claude Code while routing the Claude slot back through Claude Agent SDK creates self-call recursion. Off by default, opt-in if useful.
+- stdout-protection: console.log overridden to console.error since MCP stdio uses stdout for framed JSON-RPC.
+- MCP queries DO write to the shared `data/apex.db` history table (via `saveHistory` with `projectId: null`). They appear in the web app's history sidebar under "None".
+- All four providers' slots from the web app are honored; tier resolution and quota tracking apply.
+
+**Verified:** sent `initialize` JSON-RPC handshake to `./bin/apex-engine-mcp` over stdin; server responded with valid `protocolVersion: 2025-06-18` and `capabilities: { tools: { listChanged: true } }`. Clean boot.
+
+**To register with Claude Code:** `claude mcp add apex-engine -- /Users/nikoe/Development/Study/apex-engine/bin/apex-engine-mcp`. Or edit `~/.claude.json` / project `.claude/mcp.json` to add a `mcpServers.apex-engine.command` entry.
+
+**Previously:** **Bug fix: history was silently never saving since the Projects feature landed.** `db()` init in `src/lib/history.ts` had `CREATE INDEX ... ON history(project_id)` *inside the same `d.exec()` block* as `CREATE TABLE IF NOT EXISTS history` — on pre-existing DBs that didn't have `project_id` yet, the index creation threw "no such column", aborting the whole exec block *before* the `ALTER TABLE ADD COLUMN` migration ran. Every subsequent `db()` call re-threw. `saveHistory()` calls in `/api/ask/route.ts` were wrapped in `try { ... } catch { console.error }` — so the failure was invisible to the user; their queries completed in the UI but nothing persisted. User had 0 history rows in the DB.
 
 **Recovery: not possible** — those saves never hit disk.
 
