@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { PROVIDER_LABELS, type Provider } from "@/lib/providers";
+import { PROVIDERS, PROVIDER_LABELS, type Provider } from "@/lib/providers";
 import {
   SYNTHESIZER_OPTIONS,
   findSynthesizer,
@@ -20,11 +20,19 @@ export function Settings({
   onClose,
   synthesizerId,
   onChangeSynthesizer,
+  ecoMode,
+  onChangeEcoMode,
+  enabledProviders,
+  onToggleProvider,
 }: {
   open: boolean;
   onClose: () => void;
   synthesizerId: string;
   onChangeSynthesizer: (id: string) => void;
+  ecoMode: boolean;
+  onChangeEcoMode: (eco: boolean) => void;
+  enabledProviders: Record<Provider, boolean>;
+  onToggleProvider: (p: Provider, enabled: boolean) => void;
 }) {
   const [statuses, setStatuses] = useState<HealthStatus[] | null>(null);
   const [checking, setChecking] = useState(false);
@@ -47,7 +55,7 @@ export function Settings({
 
   return (
     <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
-      <div className="bg-white dark:bg-neutral-900 rounded-xl shadow-2xl w-full max-w-lg p-5">
+      <div className="bg-white dark:bg-neutral-900 rounded-xl shadow-2xl w-full max-w-lg p-5 max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold">Settings</h2>
           <button
@@ -78,6 +86,77 @@ export function Settings({
             </select>
             <p className="text-[11px] text-neutral-500 mt-1.5 leading-relaxed">
               {current.note}
+            </p>
+          </div>
+
+          <div className="border-t border-neutral-200 dark:border-neutral-800 pt-4">
+            <label className="text-[10px] uppercase tracking-wide text-neutral-500 block mb-2">
+              Eco mode
+            </label>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={ecoMode}
+              onClick={() => onChangeEcoMode(!ecoMode)}
+              className="flex items-center gap-2 w-full text-left"
+            >
+              <span
+                className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition ${
+                  ecoMode ? "bg-emerald-500" : "bg-neutral-300 dark:bg-neutral-700"
+                }`}
+              >
+                <span
+                  className={`inline-block h-3 w-3 rounded-full bg-white transition-transform ${
+                    ecoMode ? "translate-x-5" : "translate-x-1"
+                  }`}
+                />
+              </span>
+              <span className="text-sm">{ecoMode ? "On" : "Off"}</span>
+            </button>
+            <p className="text-[11px] text-neutral-500 mt-1.5 leading-relaxed">
+              Disables the Claude slot (saves Max-5x quota) and forces the cheaper{" "}
+              <code className="text-[10px] px-1 rounded bg-neutral-100 dark:bg-neutral-800">
+                gpt-oss-20b
+              </code>{" "}
+              synthesizer.
+            </p>
+          </div>
+
+          <div className="border-t border-neutral-200 dark:border-neutral-800 pt-4">
+            <label className="text-[10px] uppercase tracking-wide text-neutral-500 block mb-2">
+              Providers
+            </label>
+            <div className="space-y-1.5">
+              {PROVIDERS.map((p) => (
+                <button
+                  key={p}
+                  type="button"
+                  role="switch"
+                  aria-checked={enabledProviders[p] !== false}
+                  onClick={() =>
+                    onToggleProvider(p, enabledProviders[p] === false)
+                  }
+                  className="flex items-center justify-between w-full text-left text-sm py-1"
+                >
+                  <span>{PROVIDER_LABELS[p]}</span>
+                  <span
+                    className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition ${
+                      enabledProviders[p] !== false
+                        ? "bg-blue-500"
+                        : "bg-neutral-300 dark:bg-neutral-700"
+                    }`}
+                  >
+                    <span
+                      className={`inline-block h-3 w-3 rounded-full bg-white transition-transform ${
+                        enabledProviders[p] !== false ? "translate-x-5" : "translate-x-1"
+                      }`}
+                    />
+                  </span>
+                </button>
+              ))}
+            </div>
+            <p className="text-[11px] text-neutral-500 mt-1.5 leading-relaxed">
+              Disabled slots show as grayed in the panel grid. Saves cost and rate-limit pressure.
             </p>
           </div>
 
@@ -131,7 +210,7 @@ export function Settings({
           </div>
 
           <div className="text-[11px] text-neutral-500 border-t border-neutral-200 dark:border-neutral-800 pt-3">
-            Setting saved in browser. To swap models in code, edit{" "}
+            All settings saved in browser. To swap models in code, edit{" "}
             <code className="px-1 py-0.5 rounded bg-neutral-100 dark:bg-neutral-800 text-[10px]">
               src/lib/synthesizer-options.ts
             </code>

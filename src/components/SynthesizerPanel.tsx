@@ -22,11 +22,13 @@ export function SynthesizerPanel({
   synthesizerLabel,
   onResynthesize,
   resynthDisabled,
+  onContinueThread,
 }: {
   state: SynthState;
   synthesizerLabel: string;
   onResynthesize?: () => void;
   resynthDisabled?: boolean;
+  onContinueThread?: () => void;
 }) {
   const latency = formatLatency(state.latencyMs);
   const chars = state.text.length;
@@ -40,7 +42,18 @@ export function SynthesizerPanel({
             · synthesized by {synthesizerLabel}
           </span>
         </h2>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-wrap">
+          {onContinueThread && (
+            <button
+              type="button"
+              onClick={onContinueThread}
+              className="text-xs px-2.5 py-1 rounded-md bg-indigo-100 dark:bg-indigo-900/40 hover:bg-indigo-200 dark:hover:bg-indigo-900/60 text-indigo-900 dark:text-indigo-200 transition flex items-center gap-1"
+              aria-label="Continue this thread with a follow-up"
+            >
+              <span aria-hidden>↳</span>
+              <span>Continue thread</span>
+            </button>
+          )}
           {onResynthesize && (
             <button
               type="button"

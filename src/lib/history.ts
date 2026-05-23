@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import type { AttachmentMeta } from "./attachments";
 import type { Provider, Tier } from "./providers";
 import type { RoleId } from "./roles";
 
@@ -45,6 +46,8 @@ function db(): Database.Database {
     ],
     ["ensemble_id", "ALTER TABLE history ADD COLUMN ensemble_id TEXT"],
     ["roles_json", "ALTER TABLE history ADD COLUMN roles_json TEXT"],
+    ["attachments_json", "ALTER TABLE history ADD COLUMN attachments_json TEXT"],
+    ["parent_id", "ALTER TABLE history ADD COLUMN parent_id INTEGER"],
   ];
   for (const [col, sql] of migrations) {
     if (!cols.has(col)) d.exec(sql);
@@ -80,6 +83,8 @@ export type HistoryEntry = {
   totalLatencyMs: number | null;
   ensembleId: string | null;
   roles: Partial<Record<Provider, RoleId>> | null;
+  attachments: AttachmentMeta[] | null;
+  parentId: number | null;
 };
 
 type SaveInput = {
@@ -93,6 +98,8 @@ type SaveInput = {
   totalLatencyMs?: number | null;
   ensembleId?: string | null;
   roles?: Partial<Record<Provider, RoleId>> | null;
+  attachments?: AttachmentMeta[] | null;
+  parentId?: number | null;
 };
 
 export function saveHistory(input: SaveInput): number {
@@ -101,8 +108,8 @@ export function saveHistory(input: SaveInput): number {
       `INSERT INTO history (
          created_at, prompt, answers_json, synth_text, synth_error,
          project_id, cancelled, synthesizer_id, total_latency_ms,
-         ensemble_id, roles_json
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         ensemble_id, roles_json, attachments_json, parent_id
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       Date.now(),
@@ -116,6 +123,10 @@ export function saveHistory(input: SaveInput): number {
       input.totalLatencyMs ?? null,
       input.ensembleId ?? null,
       input.roles ? JSON.stringify(input.roles) : null,
+      input.attachments && input.attachments.length > 0
+        ? JSON.stringify(input.attachments)
+        : null,
+      input.parentId ?? null,
     );
   return Number(info.lastInsertRowid);
 }
@@ -133,6 +144,8 @@ type Row = {
   total_latency_ms: number | null;
   ensemble_id: string | null;
   roles_json: string | null;
+  attachments_json: string | null;
+  parent_id: number | null;
 };
 
 function toEntry(r: Row): HistoryEntry {
@@ -142,6 +155,14 @@ function toEntry(r: Row): HistoryEntry {
       roles = JSON.parse(r.roles_json) as Partial<Record<Provider, RoleId>>;
     } catch {
       roles = null;
+    }
+  }
+  let attachments: AttachmentMeta[] | null = null;
+  if (r.attachments_json) {
+    try {
+      attachments = JSON.parse(r.attachments_json) as AttachmentMeta[];
+    } catch {
+      attachments = null;
     }
   }
   return {
@@ -157,11 +178,14 @@ function toEntry(r: Row): HistoryEntry {
     totalLatencyMs: r.total_latency_ms,
     ensembleId: r.ensemble_id,
     roles,
+    attachments,
+    parentId: r.parent_id,
   };
 }
 
 const SELECT_COLS = `id, created_at, prompt, answers_json, synth_text, synth_error,
-  project_id, cancelled, synthesizer_id, total_latency_ms, ensemble_id, roles_json`;
+  project_id, cancelled, synthesizer_id, total_latency_ms, ensemble_id, roles_json,
+  attachments_json, parent_id`;
 
 export function listHistory(
   opts: { limit?: number; projectId?: number } = {},

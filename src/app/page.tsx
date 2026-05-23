@@ -27,6 +27,8 @@ import {
 const SYNTHESIZER_PREF_KEY = "apex.synthesizer";
 const SYNTHESIZER_ID_KEY = "apex.synthesizer-id";
 const ENSEMBLE_ID_KEY = "apex.ensemble-id";
+const ECO_MODE_KEY = "apex.eco-mode";
+const ENABLED_PROVIDERS_KEY = "apex.enabled-providers";
 
 type State = {
   submitting: boolean;
@@ -291,6 +293,28 @@ export default function Home() {
       ? (stored as EnsembleId)
       : DEFAULT_ENSEMBLE_ID;
   });
+  const [ecoMode, setEcoMode] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem(ECO_MODE_KEY) === "true";
+  });
+  const [enabledProviders, setEnabledProviders] = useState<Record<Provider, boolean>>(() => {
+    const defaults: Record<Provider, boolean> = {
+      claude: true,
+      openai: true,
+      llama: true,
+      gemini: true,
+    };
+    if (typeof window === "undefined") return defaults;
+    const stored = window.localStorage.getItem(ENABLED_PROVIDERS_KEY);
+    if (!stored) return defaults;
+    try {
+      const parsed = JSON.parse(stored) as Partial<Record<Provider, boolean>>;
+      return { ...defaults, ...parsed };
+    } catch {
+      return defaults;
+    }
+  });
+  const [continueThreadId, setContinueThreadId] = useState<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -307,6 +331,17 @@ export default function Home() {
   useEffect(() => {
     window.localStorage.setItem(ENSEMBLE_ID_KEY, ensembleId);
   }, [ensembleId]);
+
+  useEffect(() => {
+    window.localStorage.setItem(ECO_MODE_KEY, String(ecoMode));
+  }, [ecoMode]);
+
+  useEffect(() => {
+    window.localStorage.setItem(
+      ENABLED_PROVIDERS_KEY,
+      JSON.stringify(enabledProviders),
+    );
+  }, [enabledProviders]);
 
   // Abort any in-flight request on unmount.
   useEffect(() => {
@@ -335,24 +370,46 @@ export default function Home() {
     return () => window.removeEventListener("keydown", onKey);
   }, [state.submitting]);
 
-  async function handleSubmit(prompt: string) {
+  async function handleSubmit(prompt: string, files: File[] = []) {
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
     dispatch({ kind: "submit", prompt });
+    const parentId = continueThreadId;
+    setContinueThreadId(null);
     try {
-      const res = await fetch("/api/ask", {
+      const useMultipart = files.length > 0;
+      const init: RequestInit = {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+        signal: controller.signal,
+      };
+      if (useMultipart) {
+        const fd = new FormData();
+        fd.set("prompt", prompt);
+        if (state.activeProject?.id != null)
+          fd.set("projectId", String(state.activeProject.id));
+        fd.set("synthesize", String(synthesizerEnabled));
+        if (synthesizerId) fd.set("synthesizerId", synthesizerId);
+        if (ensembleId) fd.set("ensembleId", ensembleId);
+        if (parentId != null) fd.set("parentId", String(parentId));
+        fd.set("enabled", JSON.stringify(enabledProviders));
+        fd.set("ecoMode", String(ecoMode));
+        for (const f of files) fd.append("attachments", f, f.name);
+        init.body = fd;
+      } else {
+        init.headers = { "Content-Type": "application/json" };
+        init.body = JSON.stringify({
           prompt,
           projectId: state.activeProject?.id ?? null,
           synthesize: synthesizerEnabled,
           synthesizerId,
           ensembleId,
-        }),
-        signal: controller.signal,
-      });
+          parentId,
+          enabled: enabledProviders,
+          ecoMode,
+        });
+      }
+      const res = await fetch("/api/ask", init);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       for await (const event of parseSse(res)) {
         dispatch({ kind: "sse", event });
@@ -452,6 +509,21 @@ export default function Home() {
             </div>
           </header>
 
+          {continueThreadId != null && (
+            <div className="rounded-lg border border-indigo-200 dark:border-indigo-800 bg-indigo-50/60 dark:bg-indigo-950/40 px-3 py-1.5 text-xs flex items-center justify-between">
+              <span className="text-indigo-900 dark:text-indigo-200">
+                ↳ Continuing thread from entry #{continueThreadId}
+              </span>
+              <button
+                type="button"
+                onClick={() => setContinueThreadId(null)}
+                className="text-indigo-600 dark:text-indigo-300 hover:text-indigo-900 dark:hover:text-indigo-100"
+                aria-label="Cancel thread continuation"
+              >
+                ×
+              </button>
+            </div>
+          )}
           <ChatInput
             onSubmit={handleSubmit}
             onStop={handleStop}
@@ -497,6 +569,11 @@ export default function Home() {
               synthesizerLabel={findSynthesizer(synthesizerId).label}
               onResynthesize={viewingHistory ? handleResynthesize : undefined}
               resynthDisabled={synthInFlight}
+              onContinueThread={
+                viewingHistory && state.selectedHistoryId != null
+                  ? () => setContinueThreadId(state.selectedHistoryId)
+                  : undefined
+              }
             />
           )}
         </div>
@@ -507,6 +584,12 @@ export default function Home() {
         onClose={() => setSettingsOpen(false)}
         synthesizerId={synthesizerId}
         onChangeSynthesizer={setSynthesizerId}
+        ecoMode={ecoMode}
+        onChangeEcoMode={setEcoMode}
+        enabledProviders={enabledProviders}
+        onToggleProvider={(p, enabled) =>
+          setEnabledProviders((prev) => ({ ...prev, [p]: enabled }))
+        }
       />
     </div>
   );

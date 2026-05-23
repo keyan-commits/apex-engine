@@ -1,8 +1,17 @@
-import { streamText } from "ai";
+import { generateText, streamText } from "ai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { google } from "@ai-sdk/google";
 import { groq } from "@ai-sdk/groq";
 import { query } from "@anthropic-ai/claude-agent-sdk";
+import type { AttachmentMeta } from "./attachments";
+import { cacheGet, cachePut } from "./cache";
+import {
+  buildAiSdkContent,
+  buildClaudeContent,
+  buildTextOnlyPrompt,
+  resolveAttachments,
+  type ResolvedAttachment,
+} from "./multimodal";
 import { PROVIDERS, type Provider, type Tier } from "./providers";
 import { markPrimaryExhausted } from "./quota";
 import { roleSuffixFor, type RoleId } from "./roles";
@@ -11,8 +20,8 @@ import { resolveModel } from "./tiers";
 const DEFAULT_SYSTEM_PROMPT =
   "You are a helpful, knowledgeable assistant. Answer the user's question directly, clearly, and concisely. Use markdown for formatting when appropriate.";
 
-// Per-provider timeout. Generous default since reasoning models can be slow.
 export const DEFAULT_PROVIDER_TIMEOUT_MS = 90_000;
+const DESCRIBE_MODEL = "openai/gpt-4o-mini";
 
 const githubModels = createOpenAICompatible({
   name: "github-models",
@@ -25,6 +34,8 @@ export type FanOutOptions = {
   signal?: AbortSignal;
   timeoutMs?: number;
   roles?: Partial<Record<Provider, RoleId>>;
+  attachments?: AttachmentMeta[];
+  enabled?: Partial<Record<Provider, boolean>>;
 };
 
 export type FanOutItem = {
@@ -35,10 +46,7 @@ export type FanOutItem = {
   stream: AsyncIterable<string>;
 };
 
-function composeSystemPrompt(
-  base: string,
-  roleSuffix: string | null,
-): string {
+function composeSystemPrompt(base: string, roleSuffix: string | null): string {
   if (!roleSuffix) return base;
   return `${base}\n\n${roleSuffix}`;
 }
@@ -46,7 +54,16 @@ function composeSystemPrompt(
 export function fanOut(prompt: string, opts: FanOutOptions = {}): FanOutItem[] {
   const sys = opts.systemPrompt?.trim() || DEFAULT_SYSTEM_PROMPT;
   const timeoutMs = opts.timeoutMs ?? DEFAULT_PROVIDER_TIMEOUT_MS;
-  return PROVIDERS.map((p) => {
+  const attachments = opts.attachments ?? [];
+  const enabled = opts.enabled ?? {};
+  const activeProviders = PROVIDERS.filter((p) => enabled[p] !== false);
+
+  // Shared cache of image descriptions; lazily populated by streamFor when
+  // a text-only provider needs them. Multiple streamFor calls may await the
+  // same descriptions — share a single promise per sha256.
+  const describePromises = new Map<string, Promise<string>>();
+
+  return activeProviders.map((p) => {
     const { tier, model } = resolveModel(p);
     const roleId = (opts.roles?.[p] ?? null) as RoleId | null;
     const roleSuffix = roleSuffixFor(p, opts.roles);
@@ -56,7 +73,16 @@ export function fanOut(prompt: string, opts: FanOutOptions = {}): FanOutItem[] {
       tier,
       model,
       role: roleId,
-      stream: streamFor(p, model, prompt, sysForProvider, opts.signal, timeoutMs),
+      stream: streamFor(
+        p,
+        model,
+        prompt,
+        sysForProvider,
+        attachments,
+        describePromises,
+        opts.signal,
+        timeoutMs,
+      ),
     };
   });
 }
@@ -69,24 +95,86 @@ function combinedSignal(
   return parent ? AbortSignal.any([parent, timeoutSignal]) : timeoutSignal;
 }
 
-async function* streamFor(
+async function describeImage(
+  meta: AttachmentMeta,
+  bytes: Uint8Array,
+  describePromises: Map<string, Promise<string>>,
+): Promise<string> {
+  const cacheKeyStr = `describe:${meta.sha256}`;
+  const cached = cacheGet(cacheKeyStr);
+  if (cached !== null) return cached;
+  const existing = describePromises.get(meta.sha256);
+  if (existing) return existing;
+  const p = (async () => {
+    try {
+      const { text } = await generateText({
+        model: githubModels(DESCRIBE_MODEL),
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: "Describe this image briefly but specifically: subject, key objects, layout, text visible (if any), notable colors. 2-4 sentences. No preamble.",
+              },
+              { type: "image", image: bytes, mediaType: meta.mime },
+            ],
+          },
+        ],
+      });
+      const desc = text.trim();
+      if (desc) cachePut(cacheKeyStr, desc, 30 * 24 * 60 * 60 * 1000);
+      return desc;
+    } catch {
+      return "(image description unavailable)";
+    }
+  })();
+  describePromises.set(meta.sha256, p);
+  return p;
+}
+
+function streamFor(
   provider: Provider,
   model: string,
   prompt: string,
   systemPrompt: string,
+  attachments: AttachmentMeta[],
+  describePromises: Map<string, Promise<string>>,
   parentSignal: AbortSignal | undefined,
   timeoutMs: number,
-): AsyncGenerator<string> {
-  const signal = combinedSignal(parentSignal, timeoutMs);
-  try {
-    if (provider === "claude") {
-      yield* streamClaude(model, prompt, systemPrompt, signal);
-    } else {
-      yield* streamViaAiSdk(provider, model, prompt, systemPrompt, signal);
+): AsyncIterable<string> {
+  return {
+    [Symbol.asyncIterator]: () => streamImpl(),
+  };
+
+  async function* streamImpl() {
+    const signal = combinedSignal(parentSignal, timeoutMs);
+    let resolved: ResolvedAttachment[] = [];
+    if (attachments.length > 0) resolved = await resolveAttachments(attachments);
+    try {
+      if (provider === "claude") {
+        yield* streamClaude(model, prompt, systemPrompt, resolved, signal);
+      } else if (provider === "llama") {
+        const descriptions = new Map<string, string>();
+        if (resolved.length > 0) {
+          for (const r of resolved) {
+            if (r.bytes && r.meta.kind === "image") {
+              descriptions.set(
+                r.meta.sha256,
+                await describeImage(r.meta, r.bytes, describePromises),
+              );
+            }
+          }
+        }
+        const textPrompt = buildTextOnlyPrompt(prompt, resolved, descriptions);
+        yield* streamGroqText(model, textPrompt, systemPrompt, signal);
+      } else {
+        yield* streamMultimodal(provider, model, prompt, systemPrompt, resolved, signal);
+      }
+    } catch (err) {
+      if (is429(err)) markPrimaryExhausted(provider);
+      throw normalizeError(err, signal);
     }
-  } catch (err) {
-    if (is429(err)) markPrimaryExhausted(provider);
-    throw normalizeError(err, signal);
   }
 }
 
@@ -94,13 +182,26 @@ async function* streamClaude(
   model: string,
   prompt: string,
   systemPrompt: string,
+  resolved: ResolvedAttachment[],
   signal: AbortSignal,
 ): AsyncGenerator<string> {
-  // Claude Agent SDK 0.3.x does not accept an AbortSignal — best-effort:
-  // break out of the iteration loop when signal fires. The underlying HTTP
-  // request may continue completing in the background.
+  const promptArg =
+    resolved.length === 0
+      ? prompt
+      : (async function* () {
+          yield {
+            type: "user" as const,
+            message: {
+              role: "user" as const,
+              content: buildClaudeContent(prompt, resolved),
+            },
+            parent_tool_use_id: null,
+            session_id: "",
+          };
+        })();
+
   const result = query({
-    prompt,
+    prompt: promptArg as never,
     options: {
       model,
       allowedTools: [],
@@ -120,23 +221,47 @@ async function* streamClaude(
   }
 }
 
-async function* streamViaAiSdk(
-  provider: Exclude<Provider, "claude">,
+async function* streamMultimodal(
+  provider: Exclude<Provider, "claude" | "llama">,
+  model: string,
+  prompt: string,
+  systemPrompt: string,
+  resolved: ResolvedAttachment[],
+  signal: AbortSignal,
+): AsyncGenerator<string> {
+  const m = provider === "openai" ? githubModels(model) : google(model);
+  let captured: Error | null = null;
+  const messages = [
+    {
+      role: "user" as const,
+      content: buildAiSdkContent(prompt, resolved, true),
+    },
+  ];
+  const result = streamText({
+    model: m,
+    system: systemPrompt,
+    messages,
+    abortSignal: signal,
+    onError({ error }) {
+      captured = error instanceof Error ? error : new Error(String(error));
+    },
+  });
+  for await (const chunk of result.textStream) {
+    if (signal.aborted) throw signalToError(signal);
+    yield chunk;
+  }
+  if (captured) throw captured;
+}
+
+async function* streamGroqText(
   model: string,
   prompt: string,
   systemPrompt: string,
   signal: AbortSignal,
 ): AsyncGenerator<string> {
-  const m =
-    provider === "openai"
-      ? githubModels(model)
-      : provider === "llama"
-        ? groq(model)
-        : google(model);
-
   let captured: Error | null = null;
   const result = streamText({
-    model: m,
+    model: groq(model),
     system: systemPrompt,
     prompt,
     abortSignal: signal,
@@ -144,12 +269,10 @@ async function* streamViaAiSdk(
       captured = error instanceof Error ? error : new Error(String(error));
     },
   });
-
   for await (const chunk of result.textStream) {
     if (signal.aborted) throw signalToError(signal);
     yield chunk;
   }
-
   if (captured) throw captured;
 }
 
