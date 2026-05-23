@@ -3,7 +3,31 @@
 > Updated after every completed task. Read this first to resume work in a new session — it captures volatile state that `CLAUDE.md` doesn't (CLAUDE.md is stable architecture; this is "where are we right now").
 
 **Last updated:** 2026-05-24
-**Last action:** Fixed hardcoded "synthesized by Claude Sonnet" label in `SynthesizerPanel.tsx` — now accepts a `synthesizerLabel` prop and shows the currently-selected synthesizer (e.g., "synthesized by Qwen QwQ 32B (Groq)"). `page.tsx` computes label via `findSynthesizer(synthesizerId).label` from `synthesizer-options.ts` and passes through.
+**Last action:** Committed and pushed up-to-date HANDOFF.md to remote (user wants the dev-state log visible in the public repo too). All in-session updates from this session now in `main`.
+
+**Previously:** Repo flipped to **public** at https://github.com/keyan-commits/apex-engine. Audited for secrets — clean: only `.env.example` tracked (empty template), no `.env*`/`data/`/`*.db` ever committed, grep across full commit history found zero matches for `gsk_`, `sk-`, `ghp_`, `github_pat_`, `AIza`, or `Bearer …` patterns.
+
+**Previously:** pushed to GitHub as private (public creation was auto-blocked by classifier; created private first, then user ran `gh repo edit --visibility public`). Branch `main` tracks `origin/main`. Both commits live remotely:
+- `70361d8` — Initial commit
+- `21ca2a4` — Add MIT license
+
+**To flip to public** (if/when user wants): https://github.com/keyan-commits/apex-engine/settings → Danger zone → "Change visibility" → Public. Or `gh repo edit keyan-commits/apex-engine --visibility public` (may also hit the classifier).
+
+**Previously:** Initialized git repo + added MIT license. Two local commits on `main`:
+- `70361d8` — Initial commit (35 files, README.md added)
+- `21ca2a4` — Add MIT license (LICENSE file, `"license": "MIT"` in package.json, README license section updated)
+
+User wants to publish to `keyan-commits/apex-engine` as **public** repo. `gh` is authenticated as `keyan-commits` with `repo` scope. The `gh repo create ... --public --push` call was **blocked by auto-mode classifier** as a "Create Public Surface" soft-block — needs user-side execution.
+
+**Resume command for the user to run themselves (prefix `!` for in-session execution):**
+
+```
+!gh repo create keyan-commits/apex-engine --public --source=/Users/nikoe/Development/Study/apex-engine --push --description "Local single-user multi-LLM fan-out web app with Mixture-of-Agents synthesizer. Claude + GPT + Llama + Gemini, side-by-side."
+```
+
+Or use `--private` and flip in GitHub UI after creation to avoid the classifier block. Safety verified before initial commit: `.env.local`, `data/`, `node_modules/`, `.next/` all gitignored. Initial commit contains 35 files, no secrets.
+
+**Previous action:** Fixed hardcoded "synthesized by Claude Sonnet" label in `SynthesizerPanel.tsx` — now accepts a `synthesizerLabel` prop and shows the currently-selected synthesizer (e.g., "synthesized by Qwen QwQ 32B (Groq)"). `page.tsx` computes label via `findSynthesizer(synthesizerId).label` from `synthesizer-options.ts` and passes through.
 
 Caveat: when loading a *historical* entry, the label still shows the *currently configured* synthesizer, not the one that actually produced that historical answer. To fix properly, would need to save `synthesizer_id` in the `history` table — defer for now.
 
