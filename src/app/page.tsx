@@ -10,6 +10,7 @@ import { Settings } from "@/components/Settings";
 import { StatsChip } from "@/components/StatsChip";
 import { SubagentsPanel } from "@/components/SubagentsPanel";
 import { SynthesizerPanel, type SynthState } from "@/components/SynthesizerPanel";
+import type { AttachmentMeta } from "@/lib/attachments";
 import type { HistoryAnswer, HistoryEntry } from "@/lib/history";
 import type { Project } from "@/lib/projects";
 import { PROVIDERS, type Provider } from "@/lib/providers";
@@ -56,6 +57,7 @@ type State = {
   models: Record<Provider, PanelState>;
   synth: SynthState;
   subagentNodes: SubagentDisplayNode[] | null;
+  attachments: AttachmentMeta[] | null;
 };
 
 function initialPanel(): PanelState {
@@ -87,6 +89,7 @@ function initialState(): State {
     },
     synth: { status: "idle", text: "", error: null, latencyMs: null },
     subagentNodes: null,
+    attachments: null,
   };
 }
 
@@ -194,6 +197,7 @@ function reducer(state: State, action: Action): State {
           latencyMs: null,
         },
         subagentNodes: (e.subagentTree as SubagentDisplayNode[] | null) ?? null,
+        attachments: e.attachments,
       };
     }
     case "sse": {
@@ -613,6 +617,33 @@ export default function Home() {
                 Question
               </div>
               <div className="whitespace-pre-wrap">{state.currentPrompt}</div>
+              {state.attachments && state.attachments.length > 0 && (
+                <div className="flex flex-wrap gap-2 mt-2 pt-2 border-t border-neutral-100 dark:border-neutral-800">
+                  {state.attachments.map((a) => (
+                    <a
+                      key={a.sha256}
+                      href={`/api/attachments/${a.sha256}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-neutral-100 dark:bg-neutral-800 text-[11px] hover:bg-neutral-200 dark:hover:bg-neutral-700 transition"
+                      title={`${a.name} (${a.mime}, ${(a.size / 1024).toFixed(0)}kb)`}
+                    >
+                      {a.kind === "image" ? (
+                        <img
+                          src={`/api/attachments/${a.sha256}`}
+                          alt={a.name}
+                          className="w-6 h-6 rounded object-cover"
+                        />
+                      ) : (
+                        <span className="w-6 h-6 rounded bg-neutral-200 dark:bg-neutral-700 flex items-center justify-center text-[9px] uppercase">
+                          {a.name.split(".").pop()?.slice(0, 3) ?? "?"}
+                        </span>
+                      )}
+                      <span className="max-w-[150px] truncate">{a.name}</span>
+                    </a>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 

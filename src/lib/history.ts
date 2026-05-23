@@ -52,6 +52,8 @@ function db(): Database.Database {
       "subagent_tree_json",
       "ALTER TABLE history ADD COLUMN subagent_tree_json TEXT",
     ],
+    ["tags_json", "ALTER TABLE history ADD COLUMN tags_json TEXT"],
+    ["starred", "ALTER TABLE history ADD COLUMN starred INTEGER DEFAULT 0"],
   ];
   for (const [col, sql] of migrations) {
     if (!cols.has(col)) d.exec(sql);
@@ -60,6 +62,38 @@ function db(): Database.Database {
   d.exec(
     "CREATE INDEX IF NOT EXISTS idx_history_project_id ON history(project_id)",
   );
+  d.exec(
+    "CREATE INDEX IF NOT EXISTS idx_history_starred ON history(starred)",
+  );
+
+  // FTS5 virtual table mirrors history.prompt + synth_text for fast search.
+  // Triggers keep it in sync with the main history table.
+  d.exec(`
+    CREATE VIRTUAL TABLE IF NOT EXISTS history_fts USING fts5(
+      prompt, synth_text, content='history', content_rowid='id', tokenize='porter unicode61'
+    );
+    CREATE TRIGGER IF NOT EXISTS history_ai AFTER INSERT ON history BEGIN
+      INSERT INTO history_fts(rowid, prompt, synth_text)
+      VALUES (new.id, new.prompt, COALESCE(new.synth_text, ''));
+    END;
+    CREATE TRIGGER IF NOT EXISTS history_ad AFTER DELETE ON history BEGIN
+      INSERT INTO history_fts(history_fts, rowid, prompt, synth_text)
+      VALUES ('delete', old.id, old.prompt, COALESCE(old.synth_text, ''));
+    END;
+    CREATE TRIGGER IF NOT EXISTS history_au AFTER UPDATE ON history BEGIN
+      INSERT INTO history_fts(history_fts, rowid, prompt, synth_text)
+      VALUES ('delete', old.id, old.prompt, COALESCE(old.synth_text, ''));
+      INSERT INTO history_fts(rowid, prompt, synth_text)
+      VALUES (new.id, new.prompt, COALESCE(new.synth_text, ''));
+    END;
+  `);
+  // Backfill FTS for any pre-existing rows (idempotent — INSERT OR IGNORE not
+  // available on FTS5, but the trigger keeps new rows in sync; just rebuild).
+  try {
+    d.exec(`INSERT INTO history_fts(history_fts) VALUES ('rebuild')`);
+  } catch {
+    // ignore — rebuild can fail on first creation
+  }
 
   _db = d;
   return d;
@@ -90,6 +124,8 @@ export type HistoryEntry = {
   attachments: AttachmentMeta[] | null;
   parentId: number | null;
   subagentTree: unknown[] | null;
+  tags: string[];
+  starred: boolean;
 };
 
 type SaveInput = {
@@ -157,6 +193,8 @@ type Row = {
   attachments_json: string | null;
   parent_id: number | null;
   subagent_tree_json: string | null;
+  tags_json: string | null;
+  starred: number | null;
 };
 
 function toEntry(r: Row): HistoryEntry {
@@ -184,6 +222,15 @@ function toEntry(r: Row): HistoryEntry {
       subagentTree = null;
     }
   }
+  let tags: string[] = [];
+  if (r.tags_json) {
+    try {
+      const parsed = JSON.parse(r.tags_json);
+      if (Array.isArray(parsed)) tags = parsed.map(String);
+    } catch {
+      tags = [];
+    }
+  }
   return {
     id: r.id,
     createdAt: r.created_at,
@@ -200,30 +247,160 @@ function toEntry(r: Row): HistoryEntry {
     attachments,
     parentId: r.parent_id,
     subagentTree,
+    tags,
+    starred: r.starred === 1,
   };
 }
 
 const SELECT_COLS = `id, created_at, prompt, answers_json, synth_text, synth_error,
   project_id, cancelled, synthesizer_id, total_latency_ms, ensemble_id, roles_json,
-  attachments_json, parent_id, subagent_tree_json`;
+  attachments_json, parent_id, subagent_tree_json, tags_json, starred`;
 
-export function listHistory(
-  opts: { limit?: number; projectId?: number } = {},
-): HistoryEntry[] {
-  const { limit = 100, projectId } = opts;
-  const where = projectId !== undefined ? `WHERE project_id = ?` : ``;
-  const params: unknown[] =
-    projectId !== undefined ? [projectId, limit] : [limit];
+export type ListHistoryOptions = {
+  limit?: number;
+  offset?: number;
+  projectId?: number;
+  q?: string;
+  starred?: boolean;
+  ensembleId?: string;
+  fromMs?: number;
+  toMs?: number;
+};
+
+export function listHistory(opts: ListHistoryOptions = {}): HistoryEntry[] {
+  const { limit = 50, offset = 0, projectId, q, starred, ensembleId, fromMs, toMs } = opts;
+  const wheres: string[] = [];
+  const params: unknown[] = [];
+
+  let fromClause = "history";
+  if (q && q.trim()) {
+    fromClause = `history JOIN history_fts ON history.id = history_fts.rowid`;
+    wheres.push("history_fts MATCH ?");
+    params.push(ftsQuery(q));
+  }
+  if (projectId !== undefined) {
+    wheres.push("history.project_id = ?");
+    params.push(projectId);
+  }
+  if (starred) {
+    wheres.push("history.starred = 1");
+  }
+  if (ensembleId) {
+    wheres.push("history.ensemble_id = ?");
+    params.push(ensembleId);
+  }
+  if (fromMs !== undefined) {
+    wheres.push("history.created_at >= ?");
+    params.push(fromMs);
+  }
+  if (toMs !== undefined) {
+    wheres.push("history.created_at <= ?");
+    params.push(toMs);
+  }
+
+  const where = wheres.length ? `WHERE ${wheres.join(" AND ")}` : "";
+  const orderBy = q && q.trim() ? "ORDER BY bm25(history_fts) ASC" : "ORDER BY history.created_at DESC";
+  params.push(limit, offset);
   const rows = db()
     .prepare(
-      `SELECT ${SELECT_COLS}
-       FROM history ${where}
-       ORDER BY created_at DESC
-       LIMIT ?`,
+      `SELECT ${SELECT_COLS.split(", ").map((c) => `history.${c}`).join(", ")}
+       FROM ${fromClause}
+       ${where}
+       ${orderBy}
+       LIMIT ? OFFSET ?`,
     )
     .all(...params) as Row[];
 
   return rows.map(toEntry);
+}
+
+function ftsQuery(q: string): string {
+  // Escape FTS5 syntax characters and wrap each token in quotes for safety,
+  // then OR them together (prefix matching via *).
+  const tokens = q
+    .split(/\s+/)
+    .map((t) => t.replace(/[^\p{L}\p{N}]/gu, ""))
+    .filter((t) => t.length > 0)
+    .map((t) => `"${t}"*`);
+  if (tokens.length === 0) return '""';
+  return tokens.join(" OR ");
+}
+
+export function setStarred(id: number, starred: boolean): void {
+  db()
+    .prepare("UPDATE history SET starred = ? WHERE id = ?")
+    .run(starred ? 1 : 0, id);
+}
+
+export function setTags(id: number, tags: string[]): void {
+  db()
+    .prepare("UPDATE history SET tags_json = ? WHERE id = ?")
+    .run(JSON.stringify(tags.filter((t) => typeof t === "string" && t.trim())), id);
+}
+
+export function countHistory(opts: Omit<ListHistoryOptions, "limit" | "offset"> = {}): number {
+  const { projectId, q, starred, ensembleId, fromMs, toMs } = opts;
+  const wheres: string[] = [];
+  const params: unknown[] = [];
+  let fromClause = "history";
+  if (q && q.trim()) {
+    fromClause = `history JOIN history_fts ON history.id = history_fts.rowid`;
+    wheres.push("history_fts MATCH ?");
+    params.push(ftsQuery(q));
+  }
+  if (projectId !== undefined) {
+    wheres.push("history.project_id = ?");
+    params.push(projectId);
+  }
+  if (starred) wheres.push("history.starred = 1");
+  if (ensembleId) {
+    wheres.push("history.ensemble_id = ?");
+    params.push(ensembleId);
+  }
+  if (fromMs !== undefined) {
+    wheres.push("history.created_at >= ?");
+    params.push(fromMs);
+  }
+  if (toMs !== undefined) {
+    wheres.push("history.created_at <= ?");
+    params.push(toMs);
+  }
+  const where = wheres.length ? `WHERE ${wheres.join(" AND ")}` : "";
+  const row = db()
+    .prepare(`SELECT COUNT(*) AS n FROM ${fromClause} ${where}`)
+    .get(...params) as { n: number };
+  return row.n;
+}
+
+export function deleteHistoryEntries(ids: number[]): number {
+  if (ids.length === 0) return 0;
+  const placeholders = ids.map(() => "?").join(",");
+  const info = db()
+    .prepare(`DELETE FROM history WHERE id IN (${placeholders})`)
+    .run(...ids);
+  return Number(info.changes);
+}
+
+export function findAttachmentByHash(sha256: string): {
+  meta: AttachmentMeta;
+  historyId: number;
+} | null {
+  const rows = db()
+    .prepare(
+      "SELECT id, attachments_json FROM history WHERE attachments_json IS NOT NULL ORDER BY id DESC LIMIT 200",
+    )
+    .all() as Array<{ id: number; attachments_json: string }>;
+  for (const r of rows) {
+    try {
+      const list = JSON.parse(r.attachments_json) as AttachmentMeta[];
+      for (const m of list) {
+        if (m.sha256 === sha256) return { meta: m, historyId: r.id };
+      }
+    } catch {
+      // skip malformed
+    }
+  }
+  return null;
 }
 
 export function deleteHistoryEntry(id: number): void {
