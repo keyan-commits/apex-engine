@@ -3,7 +3,17 @@
 > Updated after every completed task. Read this first to resume work in a new session — it captures volatile state that `CLAUDE.md` doesn't (CLAUDE.md is stable architecture; this is "where are we right now").
 
 **Last updated:** 2026-05-24
-**Last action:** Added **Re-synthesize** feature so failed/missing synth answers on historical entries can be regenerated against current saved fan-out answers.
+**Last action:** **Bug fix: history was silently never saving since the Projects feature landed.** `db()` init in `src/lib/history.ts` had `CREATE INDEX ... ON history(project_id)` *inside the same `d.exec()` block* as `CREATE TABLE IF NOT EXISTS history` — on pre-existing DBs that didn't have `project_id` yet, the index creation threw "no such column", aborting the whole exec block *before* the `ALTER TABLE ADD COLUMN` migration ran. Every subsequent `db()` call re-threw. `saveHistory()` calls in `/api/ask/route.ts` were wrapped in `try { ... } catch { console.error }` — so the failure was invisible to the user; their queries completed in the UI but nothing persisted. User had 0 history rows in the DB.
+
+**Recovery: not possible** — those saves never hit disk.
+
+**Fix:**
+- Live DB patched via `sqlite3 data/apex.db "ALTER TABLE history ADD COLUMN project_id INTEGER; CREATE INDEX IF NOT EXISTS idx_history_project_id ON history(project_id);"`.
+- Source code in `src/lib/history.ts` reordered: CREATE TABLE + non-project index in one `exec`, then probe via `PRAGMA table_info(history)` for `project_id`, ALTER TABLE only if missing, then CREATE INDEX for project_id. Robust on both fresh and migrated DBs.
+
+**Followup worth doing:** the `try/catch` around saveHistory in `route.ts` and `resynthesize/route.ts` should emit a visible SSE error event instead of just `console.error` — would have surfaced this immediately.
+
+**Previously:** Added Re-synthesize feature so failed/missing synth answers on historical entries can be regenerated against current saved fan-out answers.
 
 **New / changed:**
 - `src/app/api/resynthesize/route.ts` — POST with `{ id, synthesizerId? }`. Reads history row via `getHistoryEntry()`, reuses project's system prompt if applicable, builds `synthInput: FanOutAnswer[]` from saved per-provider text/errors, streams synth via SSE (same events as `/api/ask`), then `updateHistorySynth()` writes back synth_text/synth_error in place.

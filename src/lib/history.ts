@@ -13,6 +13,7 @@ function db(): Database.Database {
   mkdirSync(DATA_DIR, { recursive: true });
   const d = new Database(DB_PATH);
   d.pragma("journal_mode = WAL");
+
   d.exec(`
     CREATE TABLE IF NOT EXISTS history (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -24,13 +25,22 @@ function db(): Database.Database {
       project_id INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_history_created_at ON history(created_at DESC);
-    CREATE INDEX IF NOT EXISTS idx_history_project_id ON history(project_id);
   `);
-  try {
+
+  // Migrate existing DBs that pre-date the project_id column.
+  // SQLite has no IF NOT EXISTS for ADD COLUMN, so probe via PRAGMA.
+  const cols = d.prepare("PRAGMA table_info(history)").all() as {
+    name: string;
+  }[];
+  if (!cols.some((c) => c.name === "project_id")) {
     d.exec("ALTER TABLE history ADD COLUMN project_id INTEGER");
-  } catch {
-    // column already exists
   }
+
+  // Now the column is guaranteed to exist — safe to create its index.
+  d.exec(
+    "CREATE INDEX IF NOT EXISTS idx_history_project_id ON history(project_id)",
+  );
+
   _db = d;
   return d;
 }
