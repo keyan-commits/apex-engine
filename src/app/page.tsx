@@ -7,6 +7,7 @@ import { HistorySidebar } from "@/components/HistorySidebar";
 import { ModelPanel, type PanelState } from "@/components/ModelPanel";
 import { ProjectSelector } from "@/components/ProjectSelector";
 import { Settings } from "@/components/Settings";
+import { ShortcutsHelp } from "@/components/ShortcutsHelp";
 import { StatsChip } from "@/components/StatsChip";
 import { SubagentsPanel } from "@/components/SubagentsPanel";
 import { SynthesizerPanel, type SynthState } from "@/components/SynthesizerPanel";
@@ -16,6 +17,7 @@ import type { Project } from "@/lib/projects";
 import { PROVIDERS, type Provider } from "@/lib/providers";
 import {
   DEFAULT_ENSEMBLE_ID,
+  ENSEMBLE_LIST,
   ENSEMBLES,
   type EnsembleId,
 } from "@/lib/roles";
@@ -37,6 +39,7 @@ const SYNTH_STYLE_KEY = "apex.synth-style";
 const ENSEMBLE_ID_KEY = "apex.ensemble-id";
 const ECO_MODE_KEY = "apex.eco-mode";
 const ENABLED_PROVIDERS_KEY = "apex.enabled-providers";
+const COMPACT_MODE_KEY = "apex.compact-mode";
 
 export type SubagentDisplayNode = {
   id: number;
@@ -365,6 +368,11 @@ export default function Home() {
     }
   });
   const [continueThreadId, setContinueThreadId] = useState<number | null>(null);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [compactMode, setCompactMode] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem(COMPACT_MODE_KEY) === "true";
+  });
   const [synthStyleId, setSynthStyleId] = useState<SynthStyleId>(() => {
     if (typeof window === "undefined") return DEFAULT_SYNTH_STYLE;
     const stored = window.localStorage.getItem(SYNTH_STYLE_KEY);
@@ -403,6 +411,35 @@ export default function Home() {
   useEffect(() => {
     window.localStorage.setItem(SYNTH_STYLE_KEY, synthStyleId);
   }, [synthStyleId]);
+
+  useEffect(() => {
+    window.localStorage.setItem(COMPACT_MODE_KEY, String(compactMode));
+  }, [compactMode]);
+
+  // Global keyboard shortcuts: ?, Alt+1..5.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const inField =
+        target?.tagName === "INPUT" ||
+        target?.tagName === "TEXTAREA" ||
+        target?.isContentEditable;
+      if (!inField && e.key === "?") {
+        e.preventDefault();
+        setShortcutsOpen(true);
+      }
+      if (e.altKey && /^[1-5]$/.test(e.key)) {
+        const idx = Number(e.key) - 1;
+        const target = ENSEMBLE_LIST[idx];
+        if (target) {
+          e.preventDefault();
+          setEnsembleId(target.id);
+        }
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   // Abort any in-flight request on unmount.
   useEffect(() => {
@@ -535,7 +572,12 @@ export default function Home() {
     viewingHistory;
 
   return (
-    <div className="min-h-screen bg-neutral-50 dark:bg-neutral-950 text-neutral-900 dark:text-neutral-100 flex">
+    <div
+      data-compact={compactMode ? "true" : "false"}
+      className={`min-h-screen bg-neutral-50 dark:bg-neutral-950 text-neutral-900 dark:text-neutral-100 flex ${
+        compactMode ? "text-[13px]" : ""
+      }`}
+    >
       <HistorySidebar
         onLoad={(entry) => dispatch({ kind: "load-history", entry })}
         onNew={() => dispatch({ kind: "new-chat" })}
@@ -561,6 +603,24 @@ export default function Home() {
               <p className="text-xs text-neutral-500 hidden md:block">
                 Multi-LLM fan-out · Mixture of Agents
               </p>
+              <button
+                type="button"
+                onClick={() => setCompactMode((v) => !v)}
+                aria-label="Toggle compact mode"
+                title={compactMode ? "Switch to comfortable" : "Switch to compact"}
+                className="text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100 text-sm leading-none w-8 h-8 rounded-lg hover:bg-neutral-100 dark:hover:bg-neutral-800 transition flex items-center justify-center"
+              >
+                {compactMode ? "◰" : "◱"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setShortcutsOpen(true)}
+                aria-label="Keyboard shortcuts"
+                className="text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100 text-sm leading-none w-8 h-8 rounded-lg hover:bg-neutral-100 dark:hover:bg-neutral-800 transition flex items-center justify-center"
+                title="Keyboard shortcuts (?)"
+              >
+                ?
+              </button>
               <button
                 type="button"
                 onClick={() => setSettingsOpen(true)}
@@ -673,6 +733,7 @@ export default function Home() {
         </div>
       </main>
 
+      <ShortcutsHelp open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
       <Settings
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}

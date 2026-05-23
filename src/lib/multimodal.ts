@@ -1,4 +1,16 @@
+import { extractText, getDocumentProxy } from "unpdf";
 import { readAttachment, readAttachmentText, type AttachmentMeta } from "./attachments";
+
+async function extractPdfText(bytes: Uint8Array): Promise<string> {
+  try {
+    const pdf = await getDocumentProxy(bytes);
+    const { text } = await extractText(pdf, { mergePages: true });
+    if (Array.isArray(text)) return text.join("\n\n");
+    return text;
+  } catch (err) {
+    return `(PDF extraction failed: ${err instanceof Error ? err.message : "unknown"})`;
+  }
+}
 
 export type UserMessagePart =
   | { type: "text"; text: string }
@@ -21,9 +33,12 @@ export async function resolveAttachments(
     } else if (meta.kind === "text") {
       const text = await readAttachmentText(meta.sha256);
       if (text != null) out.push({ meta, text });
-    } else {
-      // PDF support deferred; fall back to "[pdf attached]" marker text.
-      out.push({ meta, text: `[PDF attached: ${meta.name} — text extraction not yet enabled]` });
+    } else if (meta.kind === "pdf") {
+      const bytes = await readAttachment(meta.sha256);
+      if (bytes) {
+        const text = await extractPdfText(bytes);
+        out.push({ meta, text });
+      }
     }
   }
   return out;
