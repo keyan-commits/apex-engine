@@ -3,10 +3,19 @@
 // that cover single-user use; both are env-gated (the tool reports a
 // friendly error if neither key is set).
 //
-// v1 is snippets-only: cleaned excerpts are cheap to inject across all
+// Snippets-only by design: cleaned excerpts are cheap to inject across all
 // 5 fan-out providers. Full-page fetches add 500-2000ms latency and
-// 5-30k tokens per page × 5 providers — punted to Wave 17b if real
+// 5-30k tokens per page × 5 providers — punted to a later wave if real
 // queries demand it.
+//
+// Wave 17b adds a 24h SQLite cache so repeated grounded queries don't
+// burn the user's free-tier quota. Cache key = SHA256 of normalized
+// query + maxResults + freshnessDays.
+
+import { createHash } from "node:crypto";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
+import Database from "better-sqlite3";
 
 export type WebSearchResult = {
   title: string;
@@ -155,6 +164,66 @@ async function braveSearch(
   }
 }
 
+const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const DATA_DIR = join(process.cwd(), "data");
+const DB_PATH = join(DATA_DIR, "apex.db");
+let _cacheDb: Database.Database | null = null;
+
+function cacheDb(): Database.Database {
+  if (_cacheDb) return _cacheDb;
+  mkdirSync(DATA_DIR, { recursive: true });
+  const d = new Database(DB_PATH);
+  d.pragma("journal_mode = WAL");
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS web_search_cache (
+      key TEXT PRIMARY KEY,
+      results_json TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_web_search_cache_created_at
+      ON web_search_cache(created_at);
+  `);
+  _cacheDb = d;
+  return d;
+}
+
+function cacheKey(query: string, opts: WebSearchOptions): string {
+  const normalized = query.trim().toLowerCase().replace(/\s+/g, " ");
+  const key = `${normalized}|${opts.maxResults ?? DEFAULT_MAX_RESULTS}|${opts.freshnessDays ?? ""}`;
+  return createHash("sha256").update(key).digest("hex");
+}
+
+function cacheGet(key: string): WebSearchResponse | null {
+  try {
+    const row = cacheDb()
+      .prepare(
+        "SELECT results_json, created_at FROM web_search_cache WHERE key = ?",
+      )
+      .get(key) as { results_json: string; created_at: number } | undefined;
+    if (!row) return null;
+    if (Date.now() - row.created_at > CACHE_TTL_MS) {
+      cacheDb().prepare("DELETE FROM web_search_cache WHERE key = ?").run(key);
+      return null;
+    }
+    return JSON.parse(row.results_json) as WebSearchResponse;
+  } catch {
+    return null;
+  }
+}
+
+function cachePut(key: string, value: WebSearchResponse): void {
+  if (!value.ok) return; // Don't cache errors — likely transient.
+  try {
+    cacheDb()
+      .prepare(
+        "INSERT OR REPLACE INTO web_search_cache (key, results_json, created_at) VALUES (?, ?, ?)",
+      )
+      .run(key, JSON.stringify(value), Date.now());
+  } catch {
+    // Caching is best-effort.
+  }
+}
+
 export async function webSearch(
   query: string,
   opts: WebSearchOptions = {},
@@ -172,16 +241,23 @@ export async function webSearch(
     };
   }
 
+  const key = cacheKey(trimmed, opts);
+  const cached = cacheGet(key);
+  if (cached) return cached;
+
   // Try Tavily first when available — LLM-optimized snippets are cheaper
   // to feed across 5 providers than Brave's raw descriptions.
+  let result: WebSearchResponse;
   if (tavilyKey) {
-    const r = await tavilySearch(trimmed, opts);
-    if (r.ok) return r;
-    if (!braveKey) return r; // No fallback; return Tavily's error.
-    // Fall through to Brave on Tavily failure.
+    result = await tavilySearch(trimmed, opts);
+    if (!result.ok && braveKey) {
+      result = await braveSearch(trimmed, opts);
+    }
+  } else {
+    result = await braveSearch(trimmed, opts);
   }
-
-  return braveSearch(trimmed, opts);
+  cachePut(key, result);
+  return result;
 }
 
 export function formatWebSearchAsMarkdown(r: WebSearchResponse): string {

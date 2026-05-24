@@ -29,6 +29,8 @@ import {
 import { exhaustedNonClaudeCount } from "@/lib/quota";
 import { findSynthesizer } from "@/lib/synthesizer-options";
 import { synthesize, type FanOutAnswer } from "@/lib/synthesize";
+import { webSearch, formatWebSearchAsMarkdown } from "@/lib/web-search";
+import { classifyWebGrounding } from "@/lib/web-search-classifier";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -58,7 +60,18 @@ type ParsedBody = {
   // Adds ~2× latency on the synth step. Default false; opt-in via the
   // Settings UI.
   selfRefine: boolean;
+  // Wave 17b — Off | Auto | Always. Auto runs the classifier (default).
+  webGroundingMode: "off" | "auto" | "always";
+  // Wave 17b — set by the "Retry with web search" button on low-conf
+  // synth panels. Bypasses the classifier; forces a grounded retry of
+  // an otherwise-identical prompt.
+  forceWebGrounding: boolean;
 };
+
+function parseWebGroundingMode(raw: string | null | undefined): "off" | "auto" | "always" {
+  if (raw === "off" || raw === "always") return raw;
+  return "auto";
+}
 
 async function parseRequest(req: Request): Promise<{ ok: true; body: ParsedBody } | { ok: false; error: string }> {
   const ct = req.headers.get("content-type") ?? "";
@@ -118,6 +131,8 @@ async function parseRequest(req: Request): Promise<{ ok: true; body: ParsedBody 
         forceFullFanout: json("forceFullFanout") === "true",
         favorClaudeWhenDegraded: json("favorClaudeWhenDegraded") !== "false",
         selfRefine: json("selfRefine") === "true",
+        webGroundingMode: parseWebGroundingMode(json("webGroundingMode")),
+        forceWebGrounding: json("forceWebGrounding") === "true",
       },
     };
   }
@@ -148,6 +163,10 @@ async function parseRequest(req: Request): Promise<{ ok: true; body: ParsedBody 
           ? body.favorClaudeWhenDegraded
           : true,
       selfRefine: body.selfRefine === true,
+      webGroundingMode: parseWebGroundingMode(
+        typeof body.webGroundingMode === "string" ? body.webGroundingMode : null,
+      ),
+      forceWebGrounding: body.forceWebGrounding === true,
     },
   };
 }
@@ -375,11 +394,71 @@ export async function POST(req: Request) {
     }
   }
 
-  // Thread context: prepend prior Q+best-answer chain.
+  // Wave 17b — web grounding. Run the classifier; if mode=always OR
+  // (mode=auto AND classifier says ground) OR forceWebGrounding, hit
+  // Tavily/Brave and prepend the cleaned snippets to BOTH the fan-out
+  // prompt and the synth's systemPrompt. Save the flag on the history
+  // row so the UI can render a "🌐 grounded" badge for resurfaced
+  // history. Synchronous; no SSE event yet — we send web-grounded
+  // inside the streaming start() once we know it was actually used.
+  let webContextBlock = "";
+  let webGroundedPayload: {
+    provider: "tavily" | "brave";
+    query: string;
+    resultCount: number;
+    reason: string;
+  } | null = null;
+  if (body.webGroundingMode !== "off") {
+    const cls = classifyWebGrounding(body.prompt);
+    const shouldGround =
+      body.forceWebGrounding ||
+      body.webGroundingMode === "always" ||
+      (body.webGroundingMode === "auto" && cls.shouldGround);
+    if (shouldGround) {
+      try {
+        const r = await webSearch(body.prompt, { maxResults: 8 });
+        if (r.ok && r.results.length > 0) {
+          webContextBlock = `[Web context — ${r.results.length} results via ${r.provider}, query: "${r.query}"]\n${formatWebSearchAsMarkdown(r)}\n[End web context]`;
+          webGroundedPayload = {
+            provider: r.provider,
+            query: r.query,
+            resultCount: r.results.length,
+            reason: body.forceWebGrounding
+              ? "user clicked Retry with web search"
+              : body.webGroundingMode === "always"
+                ? "settings: always-ground"
+                : cls.reason,
+          };
+          log.info(
+            `web-grounded via ${r.provider}: ${r.results.length} results (${webGroundedPayload.reason})`,
+          );
+        } else if (!r.ok) {
+          log.warn(`web grounding skipped: ${r.reason}`);
+        }
+      } catch (err) {
+        log.warn(
+          `web grounding threw (non-blocking): ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+  }
+
+  // Thread context: prepend prior Q+best-answer chain. Web grounding
+  // (if any) goes BEFORE the thread context so the fresh data anchors
+  // the conversation, then earlier turns add color.
   const parentContext = buildParentContext(effectiveParentId);
-  const promptWithContext = parentContext
+  const promptCore = parentContext
     ? `${parentContext}\n\n---\n\n### Current question\n\n${body.prompt}`
     : body.prompt;
+  const promptWithContext = webContextBlock
+    ? `${webContextBlock}\n\n---\n\n${promptCore}`
+    : promptCore;
+  // Synth sees the same web context block via systemPrompt so it doesn't
+  // get blindsided when the fan-out answers cite recent data the synth
+  // can't see. Project systemPrompt comes first; web context appended.
+  const synthSystemPrompt = webContextBlock
+    ? `${systemPrompt ? systemPrompt + "\n\n" : ""}${webContextBlock}`
+    : systemPrompt;
 
   const signal = req.signal;
   const startedAt = Date.now();
@@ -429,6 +508,12 @@ export async function POST(req: Request) {
       // a chip and offer an "undo" affordance.
       if (followUpEventPayload) {
         send({ type: "follow-up-detected", ...followUpEventPayload });
+      }
+
+      // Wave 17b — surface the web-grounding result so the UI can render
+      // the 🌐 badge before any fan-out tokens arrive.
+      if (webGroundedPayload) {
+        send({ type: "web-grounded", ...webGroundedPayload });
       }
 
       // Sub-agents path: when ensembleId is "decompose", plan → mini fan-outs → final synth.
@@ -728,7 +813,7 @@ export async function POST(req: Request) {
             } = { current: null };
             try {
               for await (const chunk of synthesize(promptWithContext, synthInput, {
-                systemPrompt,
+                systemPrompt: synthSystemPrompt,
                 synthesizerId: effectiveSynthesizerId,
                 signal,
                 styleId: body.styleId,
@@ -846,6 +931,7 @@ export async function POST(req: Request) {
             totalInputTokens,
             totalOutputTokens,
             totalCostUsd,
+            webGrounded: webGroundedPayload != null,
           });
           send({ type: "history-saved", id });
         } catch (err) {

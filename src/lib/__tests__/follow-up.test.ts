@@ -39,6 +39,7 @@ function makeParent(overrides: Partial<HistoryEntry> = {}): HistoryEntry {
     totalInputTokens: null,
     totalOutputTokens: null,
     totalCostUsd: null,
+    webGrounded: false,
     ...overrides,
   };
 }

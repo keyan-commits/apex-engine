@@ -40,6 +40,16 @@ export type SseEvent =
       signals: string[];
     }
   | {
+      // Wave 17b — server ran apex_web_search and prepended the results
+      // to every fan-out provider's prompt. UI renders a 🌐 grounded
+      // badge on the synth panel.
+      type: "web-grounded";
+      provider: "tavily" | "brave";
+      query: string;
+      resultCount: number;
+      reason: string;
+    }
+  | {
       type: "subagent-plan";
       nodes: Array<{
         id: number;

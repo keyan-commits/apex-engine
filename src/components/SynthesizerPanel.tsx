@@ -18,18 +18,29 @@ function formatLatency(ms: number | null): string | null {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
+export type WebGroundingBadge = {
+  provider: "tavily" | "brave";
+  query: string;
+  resultCount: number;
+  reason: string;
+};
+
 export function SynthesizerPanel({
   state,
   synthesizerLabel,
   onResynthesize,
   resynthDisabled,
   onContinueThread,
+  webGrounding,
+  onRetryWithWebSearch,
 }: {
   state: SynthState;
   synthesizerLabel: string;
   onResynthesize?: () => void;
   resynthDisabled?: boolean;
   onContinueThread?: () => void;
+  webGrounding?: WebGroundingBadge | null;
+  onRetryWithWebSearch?: () => void;
 }) {
   const latency = formatLatency(state.latencyMs);
   const chars = state.text.length;
@@ -59,6 +70,15 @@ export function SynthesizerPanel({
             >
               {lowConfidence && <span aria-hidden>⚠ </span>}
               confidence {confidence.score}
+            </span>
+          )}
+          {webGrounding && (
+            <span
+              className="text-[10px] font-normal px-1.5 py-0.5 rounded-md bg-sky-100 text-sky-900 dark:bg-sky-900/40 dark:text-sky-200"
+              title={`Grounded with ${webGrounding.resultCount > 0 ? `${webGrounding.resultCount} ` : ""}web result${webGrounding.resultCount === 1 ? "" : "s"} via ${webGrounding.provider}. ${webGrounding.reason}`}
+              aria-label={`Synth grounded with fresh web data via ${webGrounding.provider}`}
+            >
+              <span aria-hidden>🌐 </span>grounded
             </span>
           )}
         </h2>
@@ -136,9 +156,21 @@ export function SynthesizerPanel({
                     {confidence.justification}
                   </div>
                 )}
-                <div className="mt-1.5 opacity-75">
-                  Consider re-running with more providers, or asking a more
-                  specific question.
+                <div className="mt-1.5 opacity-75 flex items-center gap-2 flex-wrap">
+                  <span>
+                    Consider re-running with more providers, or asking a more
+                    specific question.
+                  </span>
+                  {onRetryWithWebSearch && (
+                    <button
+                      type="button"
+                      onClick={onRetryWithWebSearch}
+                      className="text-[11px] px-2 py-0.5 rounded bg-sky-100 dark:bg-sky-900/40 hover:bg-sky-200 dark:hover:bg-sky-900/60 text-sky-900 dark:text-sky-200 font-medium transition"
+                      aria-label="Retry this query with web search grounding"
+                    >
+                      🌐 Retry with web search
+                    </button>
+                  )}
                 </div>
               </div>
             )}

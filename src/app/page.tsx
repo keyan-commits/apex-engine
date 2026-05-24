@@ -42,6 +42,9 @@ const ECO_MODE_KEY = "apex.eco-mode";
 const ENABLED_PROVIDERS_KEY = "apex.enabled-providers";
 const FAVOR_CLAUDE_KEY = "apex.favor-claude-when-degraded";
 const SELF_REFINE_KEY = "apex.self-refine";
+const WEB_GROUNDING_KEY = "apex.web-grounding-mode";
+
+type WebGroundingMode = "off" | "auto" | "always";
 const COMPACT_MODE_KEY = "apex.compact-mode";
 
 export type SubagentDisplayNode = {
@@ -59,6 +62,13 @@ type ClassificationDisplay = {
   soloMode: boolean;
 };
 
+type WebGroundingState = {
+  provider: "tavily" | "brave";
+  query: string;
+  resultCount: number;
+  reason: string;
+};
+
 type State = {
   submitting: boolean;
   currentPrompt: string | null;
@@ -71,6 +81,7 @@ type State = {
   subagentNodes: SubagentDisplayNode[] | null;
   attachments: AttachmentMeta[] | null;
   classification: ClassificationDisplay | null;
+  webGrounding: WebGroundingState | null;
 };
 
 function initialPanel(): PanelState {
@@ -105,6 +116,7 @@ function initialState(): State {
     subagentNodes: null,
     attachments: null,
     classification: null,
+    webGrounding: null,
   };
 }
 
@@ -217,6 +229,14 @@ function reducer(state: State, action: Action): State {
         },
         subagentNodes: (e.subagentTree as SubagentDisplayNode[] | null) ?? null,
         attachments: e.attachments,
+        webGrounding: e.webGrounded
+          ? {
+              provider: "tavily",
+              query: e.prompt,
+              resultCount: 0,
+              reason: "loaded from history (provider/result-count not stored)",
+            }
+          : null,
       };
     }
     case "sse": {
@@ -355,6 +375,18 @@ function reducer(state: State, action: Action): State {
                 ? `Auto-threaded from history #${ev.parentId}: "${ev.parentPromptSnippet}"`
                 : `Looks like a follow-up to history #${ev.parentId}? Click "Continue thread" if so.`,
           };
+        case "web-grounded":
+          // Wave 17b — synth answer was grounded with fresh web data.
+          // Surface as a badge on the synth panel + a brief notice.
+          return {
+            ...state,
+            webGrounding: {
+              provider: ev.provider,
+              query: ev.query,
+              resultCount: ev.resultCount,
+              reason: ev.reason,
+            },
+          };
       }
     }
   }
@@ -401,6 +433,13 @@ export default function Home() {
   const [selfRefine, setSelfRefine] = useState<boolean>(() => {
     if (typeof window === "undefined") return false;
     return window.localStorage.getItem(SELF_REFINE_KEY) === "true";
+  });
+  // Wave 17b — web grounding mode. Off | Auto | Always. Auto runs a
+  // sync regex classifier server-side; Always grounds every query.
+  const [webGroundingMode, setWebGroundingMode] = useState<WebGroundingMode>(() => {
+    if (typeof window === "undefined") return "auto";
+    const stored = window.localStorage.getItem(WEB_GROUNDING_KEY);
+    return stored === "off" || stored === "always" ? stored : "auto";
   });
   const [enabledProviders, setEnabledProviders] = useState<Record<Provider, boolean>>(() => {
     const defaults: Record<Provider, boolean> = {
@@ -461,6 +500,10 @@ export default function Home() {
   useEffect(() => {
     window.localStorage.setItem(SELF_REFINE_KEY, String(selfRefine));
   }, [selfRefine]);
+
+  useEffect(() => {
+    window.localStorage.setItem(WEB_GROUNDING_KEY, webGroundingMode);
+  }, [webGroundingMode]);
 
   useEffect(() => {
     window.localStorage.setItem(
@@ -532,7 +575,7 @@ export default function Home() {
   async function handleSubmit(
     prompt: string,
     files: File[] = [],
-    opts: { forceFullFanout?: boolean } = {},
+    opts: { forceFullFanout?: boolean; forceWebGrounding?: boolean } = {},
   ) {
     abortRef.current?.abort();
     const controller = new AbortController();
@@ -560,7 +603,9 @@ export default function Home() {
         fd.set("favorClaudeWhenDegraded", String(favorClaude));
         fd.set("selfRefine", String(selfRefine));
         fd.set("styleId", synthStyleId);
+        fd.set("webGroundingMode", webGroundingMode);
         if (opts.forceFullFanout) fd.set("forceFullFanout", "true");
+        if (opts.forceWebGrounding) fd.set("forceWebGrounding", "true");
         for (const f of files) fd.append("attachments", f, f.name);
         init.body = fd;
       } else {
@@ -578,6 +623,8 @@ export default function Home() {
           selfRefine,
           styleId: synthStyleId,
           forceFullFanout: opts.forceFullFanout === true,
+          webGroundingMode,
+          forceWebGrounding: opts.forceWebGrounding === true,
         });
       }
       const res = await fetch("/api/ask", init);
@@ -841,6 +888,18 @@ export default function Home() {
                   ? () => setContinueThreadId(state.selectedHistoryId)
                   : undefined
               }
+              webGrounding={state.webGrounding}
+              onRetryWithWebSearch={
+                !viewingHistory &&
+                !synthInFlight &&
+                state.webGrounding == null &&
+                state.currentPrompt
+                  ? () =>
+                      handleSubmit(state.currentPrompt as string, [], {
+                        forceWebGrounding: true,
+                      })
+                  : undefined
+              }
             />
           )}
         </div>
@@ -858,6 +917,8 @@ export default function Home() {
         onChangeFavorClaude={setFavorClaude}
         selfRefine={selfRefine}
         onChangeSelfRefine={setSelfRefine}
+        webGroundingMode={webGroundingMode}
+        onChangeWebGroundingMode={setWebGroundingMode}
         enabledProviders={enabledProviders}
         onToggleProvider={(p, enabled) =>
           setEnabledProviders((prev) => ({ ...prev, [p]: enabled }))

@@ -27,6 +27,8 @@ export function Settings({
   onChangeFavorClaude,
   selfRefine,
   onChangeSelfRefine,
+  webGroundingMode,
+  onChangeWebGroundingMode,
   enabledProviders,
   onToggleProvider,
   synthStyleId,
@@ -42,6 +44,8 @@ export function Settings({
   onChangeFavorClaude: (favor: boolean) => void;
   selfRefine: boolean;
   onChangeSelfRefine: (refine: boolean) => void;
+  webGroundingMode: "off" | "auto" | "always";
+  onChangeWebGroundingMode: (mode: "off" | "auto" | "always") => void;
   enabledProviders: Record<Provider, boolean>;
   onToggleProvider: (p: Provider, enabled: boolean) => void;
   synthStyleId: SynthStyleId;
@@ -223,6 +227,41 @@ export function Settings({
               After the initial synth draft, run a critique→revise pass on the
               same model. Higher quality but ~2× synth latency. Use for
               important answers; leave off for quick lookups.
+            </p>
+          </div>
+
+          <div className="border-t border-neutral-200 dark:border-neutral-800 pt-4">
+            <label className="text-[10px] uppercase tracking-wide text-neutral-500 block mb-2">
+              Web grounding
+            </label>
+            <div className="flex gap-1.5">
+              {(["off", "auto", "always"] as const).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => onChangeWebGroundingMode(mode)}
+                  className={`text-xs px-3 py-1.5 rounded-md transition flex-1 ${
+                    webGroundingMode === mode
+                      ? "bg-sky-500 text-white"
+                      : "bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 hover:bg-neutral-200 dark:hover:bg-neutral-700"
+                  }`}
+                >
+                  {mode === "off" ? "Off" : mode === "auto" ? "Auto" : "Always"}
+                </button>
+              ))}
+            </div>
+            <p className="text-[11px] text-neutral-500 mt-1.5 leading-relaxed">
+              Prepends fresh web-search results to every fan-out provider when active.{" "}
+              <strong>Auto</strong> (default) only kicks in for queries the
+              classifier flags as current-data (latest/price/news/2024+). Requires{" "}
+              <code className="text-[10px] px-1 rounded bg-neutral-100 dark:bg-neutral-800">
+                TAVILY_API_KEY
+              </code>{" "}
+              or{" "}
+              <code className="text-[10px] px-1 rounded bg-neutral-100 dark:bg-neutral-800">
+                BRAVE_API_KEY
+              </code>{" "}
+              in .env.local.
             </p>
           </div>
 

@@ -66,6 +66,10 @@ function db(): Database.Database {
       "total_cost_usd",
       "ALTER TABLE history ADD COLUMN total_cost_usd REAL",
     ],
+    [
+      "web_grounded",
+      "ALTER TABLE history ADD COLUMN web_grounded INTEGER DEFAULT 0",
+    ],
   ];
   for (const [col, sql] of migrations) {
     if (!cols.has(col)) d.exec(sql);
@@ -144,6 +148,7 @@ export type HistoryEntry = {
   totalInputTokens: number | null;
   totalOutputTokens: number | null;
   totalCostUsd: number | null;
+  webGrounded: boolean;
 };
 
 type SaveInput = {
@@ -163,6 +168,7 @@ type SaveInput = {
   totalInputTokens?: number | null;
   totalOutputTokens?: number | null;
   totalCostUsd?: number | null;
+  webGrounded?: boolean;
 };
 
 export function saveHistory(input: SaveInput): number {
@@ -173,8 +179,8 @@ export function saveHistory(input: SaveInput): number {
          project_id, cancelled, synthesizer_id, total_latency_ms,
          ensemble_id, roles_json, attachments_json, parent_id,
          subagent_tree_json, total_input_tokens, total_output_tokens,
-         total_cost_usd
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         total_cost_usd, web_grounded
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       Date.now(),
@@ -198,6 +204,7 @@ export function saveHistory(input: SaveInput): number {
       input.totalInputTokens ?? null,
       input.totalOutputTokens ?? null,
       input.totalCostUsd ?? null,
+      input.webGrounded ? 1 : 0,
     );
   return Number(info.lastInsertRowid);
 }
@@ -223,6 +230,7 @@ type Row = {
   total_input_tokens: number | null;
   total_output_tokens: number | null;
   total_cost_usd: number | null;
+  web_grounded: number | null;
 };
 
 function toEntry(r: Row): HistoryEntry {
@@ -280,13 +288,14 @@ function toEntry(r: Row): HistoryEntry {
     totalInputTokens: r.total_input_tokens,
     totalOutputTokens: r.total_output_tokens,
     totalCostUsd: r.total_cost_usd,
+    webGrounded: r.web_grounded === 1,
   };
 }
 
 const SELECT_COLS = `id, created_at, prompt, answers_json, synth_text, synth_error,
   project_id, cancelled, synthesizer_id, total_latency_ms, ensemble_id, roles_json,
   attachments_json, parent_id, subagent_tree_json, tags_json, starred,
-  total_input_tokens, total_output_tokens, total_cost_usd`;
+  total_input_tokens, total_output_tokens, total_cost_usd, web_grounded`;
 
 export type ListHistoryOptions = {
   limit?: number;
