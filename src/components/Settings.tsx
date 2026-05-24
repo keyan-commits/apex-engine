@@ -253,15 +253,12 @@ export function Settings({
             <p className="text-[11px] text-neutral-500 mt-1.5 leading-relaxed">
               Prepends fresh web-search results to every fan-out provider when active.{" "}
               <strong>Auto</strong> (default) only kicks in for queries the
-              classifier flags as current-data (latest/price/news/2024+). Requires{" "}
+              classifier flags as current-data (latest/price/news/2024+). Works
+              out of the box via DuckDuckGo HTML scrape; set{" "}
               <code className="text-[10px] px-1 rounded bg-neutral-100 dark:bg-neutral-800">
                 TAVILY_API_KEY
               </code>{" "}
-              or{" "}
-              <code className="text-[10px] px-1 rounded bg-neutral-100 dark:bg-neutral-800">
-                BRAVE_API_KEY
-              </code>{" "}
-              in .env.local.
+              in <code className="text-[10px] px-1 rounded bg-neutral-100 dark:bg-neutral-800">.env.local</code> for higher-quality LLM-cleaned snippets (free, no card).
             </p>
           </div>
 

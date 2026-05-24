@@ -63,7 +63,7 @@ type ClassificationDisplay = {
 };
 
 type WebGroundingState = {
-  provider: "tavily" | "brave";
+  provider: "tavily" | "ddg";
   query: string;
   resultCount: number;
   reason: string;

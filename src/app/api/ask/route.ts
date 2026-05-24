@@ -403,7 +403,7 @@ export async function POST(req: Request) {
   // inside the streaming start() once we know it was actually used.
   let webContextBlock = "";
   let webGroundedPayload: {
-    provider: "tavily" | "brave";
+    provider: "tavily" | "ddg";
     query: string;
     resultCount: number;
     reason: string;
@@ -419,18 +419,19 @@ export async function POST(req: Request) {
         const r = await webSearch(body.prompt, { maxResults: 8 });
         if (r.ok && r.results.length > 0) {
           webContextBlock = `[Web context — ${r.results.length} results via ${r.provider}, query: "${r.query}"]\n${formatWebSearchAsMarkdown(r)}\n[End web context]`;
+          const reason = body.forceWebGrounding
+            ? "user clicked Retry with web search"
+            : body.webGroundingMode === "always"
+              ? "settings: always-ground"
+              : cls.reason;
           webGroundedPayload = {
             provider: r.provider,
             query: r.query,
             resultCount: r.results.length,
-            reason: body.forceWebGrounding
-              ? "user clicked Retry with web search"
-              : body.webGroundingMode === "always"
-                ? "settings: always-ground"
-                : cls.reason,
+            reason,
           };
           log.info(
-            `web-grounded via ${r.provider}: ${r.results.length} results (${webGroundedPayload.reason})`,
+            `web-grounded via ${r.provider}: ${r.results.length} results (${reason})`,
           );
         } else if (!r.ok) {
           log.warn(`web grounding skipped: ${r.reason}`);

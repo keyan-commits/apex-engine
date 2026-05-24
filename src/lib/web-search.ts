@@ -1,14 +1,24 @@
-// Wave 17a — web grounding. Tavily primary (LLM-optimized snippets) +
-// Brave fallback (raw snippets, ~$5/mo of complimentary credit). Both
-// offer roughly 1000 free queries/month at single-user scale; both are
-// env-gated (the tool reports a friendly error if neither key is set).
+// Wave 17a — web grounding. Tavily primary (LLM-optimized snippets,
+// requires a free API key) + DuckDuckGo HTML scrape fallback (zero key,
+// zero signup, works out of the box).
 //
 // Pricing as of 2026-05-24:
-//   - Tavily: 1000 API credits/mo, NO credit card required.
-//   - Brave: $5/mo of complimentary credit auto-applied; at $5 per 1000
-//     queries on the Search plan, that's effectively ~1000 free
-//     queries/mo. A credit card is required at signup to receive the
-//     credits.
+//   - Tavily: 1000 API credits/month, NO credit card required.
+//     Sign up at https://app.tavily.com — the key unlocks LLM-cleaned
+//     snippets which are much higher quality than DDG raw descriptions.
+//   - DuckDuckGo HTML endpoint: zero-config fallback. We GET
+//     https://html.duckduckgo.com/html/?q=...&kl=us-en and regex-parse
+//     the results page. Their endpoint is tolerant of low-volume
+//     programmatic access (single-user use is fine); they'll 429 if
+//     you slam it (~5-10 q/min ceiling before throttle). HTML format
+//     has been stable for years but isn't a contract — if the parser
+//     breaks one day, we fall back gracefully to "no results".
+//
+// Brave Search API was evaluated but rejected: it switched to a
+// credit-based model in 2025 ($5/mo complimentary credit ≈ ~1000 free
+// queries) AND requires a credit card at signup. Tavily + DDG covers
+// the same ground without the card requirement, so we don't ship a
+// Brave integration.
 //
 // Snippets-only by design: cleaned excerpts are cheap to inject across all
 // 5 fan-out providers. Full-page fetches add 500-2000ms latency and
@@ -31,9 +41,11 @@ export type WebSearchResult = {
   publishedAt?: string;
 };
 
+export type WebSearchProvider = "tavily" | "ddg";
+
 export type WebSearchResponse = {
   ok: true;
-  provider: "tavily" | "brave";
+  provider: WebSearchProvider;
   query: string;
   results: WebSearchResult[];
 } | {
@@ -108,33 +120,91 @@ async function tavilySearch(
   }
 }
 
-async function braveSearch(
+// HTML-entity decoder. Covers the entities DDG actually emits (amp/lt/gt/
+// quot/#39/nbsp + numeric refs). Sufficient for snippet text; we are not
+// parsing arbitrary user HTML.
+function decodeEntities(s: string): string {
+  return s
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&#x([0-9a-f]+);/gi, (_m, h: string) =>
+      String.fromCodePoint(parseInt(h, 16)),
+    )
+    .replace(/&#(\d+);/g, (_m, d: string) => String.fromCodePoint(parseInt(d, 10)));
+}
+
+function stripTags(s: string): string {
+  return s.replace(/<[^>]+>/g, "");
+}
+
+// DDG sometimes wraps result URLs in a redirector: //duckduckgo.com/l/?uddg=<encoded-url>.
+// Unwrap when present so callers get the canonical destination.
+function unwrapDdgRedirect(href: string): string {
+  if (!href) return href;
+  const normalized = href.startsWith("//") ? `https:${href}` : href;
+  try {
+    const u = new URL(normalized);
+    if (u.hostname === "duckduckgo.com" && u.pathname === "/l/") {
+      const real = u.searchParams.get("uddg");
+      if (real) return decodeURIComponent(real);
+    }
+    return normalized;
+  } catch {
+    return href;
+  }
+}
+
+function parseDdgHtml(html: string, max: number): WebSearchResult[] {
+  // Each result block looks roughly like:
+  //   <div class="result ...">
+  //     <h2 class="result__title">
+  //       <a class="result__a" href="..."> title </a>
+  //     </h2>
+  //     <a class="result__snippet" href="...">snippet</a>
+  //   </div>
+  // We pull each result__a anchor and find the *next* result__snippet
+  // anchor after it. Two passes keeps the regex simple and avoids
+  // catastrophic backtracking on huge pages.
+  const resultRe =
+    /<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>([\s\S]{0,2000}?)<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/g;
+  const out: WebSearchResult[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = resultRe.exec(html)) !== null && out.length < max) {
+    const rawHref = m[1];
+    const rawTitle = m[2];
+    const rawSnippet = m[4];
+    const url = unwrapDdgRedirect(decodeEntities(rawHref));
+    if (!url || url.startsWith("javascript:")) continue;
+    const title = decodeEntities(stripTags(rawTitle)).trim() || url;
+    const snippet = trimSnippet(decodeEntities(stripTags(rawSnippet)));
+    out.push({ title, url, snippet });
+  }
+  return out;
+}
+
+async function ddgSearch(
   query: string,
   opts: WebSearchOptions,
 ): Promise<WebSearchResponse> {
-  const key = process.env.BRAVE_API_KEY;
-  if (!key) return { ok: false, reason: "BRAVE_API_KEY not set" };
-
-  const params = new URLSearchParams({
-    q: query,
-    count: String(opts.maxResults ?? DEFAULT_MAX_RESULTS),
-  });
-  if (opts.freshnessDays) {
-    // Brave uses freshness=pd (past day) / pw (past week) / pm (past month) / py (past year).
-    if (opts.freshnessDays <= 1) params.set("freshness", "pd");
-    else if (opts.freshnessDays <= 7) params.set("freshness", "pw");
-    else if (opts.freshnessDays <= 31) params.set("freshness", "pm");
-    else params.set("freshness", "py");
-  }
-
+  // DDG's HTML endpoint accepts a plain `q`. `kl` = locale; `kp=-2` turns
+  // safe-search off (we're a single-user grounding tool, not a kids
+  // browser). They block obvious bot UA strings; a modern Firefox UA is
+  // the canonical workaround and matches what most search libraries use.
+  const params = new URLSearchParams({ q: query, kl: "us-en", kp: "-2" });
   try {
     const res = await fetch(
-      `https://api.search.brave.com/res/v1/web/search?${params.toString()}`,
+      `https://html.duckduckgo.com/html/?${params.toString()}`,
       {
         method: "GET",
         headers: {
-          accept: "application/json",
-          "x-subscription-token": key,
+          "User-Agent":
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 13.0; rv:121.0) Gecko/20100101 Firefox/121.0",
+          accept: "text/html,application/xhtml+xml,application/xml;q=0.9",
+          "accept-language": "en-US,en;q=0.5",
         },
         signal: opts.signal,
       },
@@ -143,30 +213,23 @@ async function braveSearch(
       const text = await res.text();
       return {
         ok: false,
-        reason: `Brave HTTP ${res.status}: ${text.slice(0, 200)}`,
+        reason: `DuckDuckGo HTTP ${res.status}: ${text.slice(0, 200)}`,
       };
     }
-    const data = (await res.json()) as {
-      web?: {
-        results?: Array<{
-          title?: string;
-          url?: string;
-          description?: string;
-          age?: string;
-        }>;
+    const html = await res.text();
+    const results = parseDdgHtml(html, opts.maxResults ?? DEFAULT_MAX_RESULTS);
+    if (results.length === 0) {
+      return {
+        ok: false,
+        reason:
+          "DuckDuckGo returned no parseable results. The HTML format may have changed, or the query was throttled.",
       };
-    };
-    const results = (data.web?.results ?? []).map((r) => ({
-      title: r.title ?? r.url ?? "(untitled)",
-      url: r.url ?? "",
-      snippet: trimSnippet(r.description ?? ""),
-      ...(r.age ? { publishedAt: r.age } : {}),
-    }));
-    return { ok: true, provider: "brave", query, results };
+    }
+    return { ok: true, provider: "ddg", query, results };
   } catch (err) {
     return {
       ok: false,
-      reason: `Brave threw: ${err instanceof Error ? err.message : String(err)}`,
+      reason: `DuckDuckGo threw: ${err instanceof Error ? err.message : String(err)}`,
     };
   }
 }
@@ -238,30 +301,22 @@ export async function webSearch(
   const trimmed = query.trim();
   if (trimmed.length === 0) return { ok: false, reason: "empty query" };
 
-  const tavilyKey = process.env.TAVILY_API_KEY;
-  const braveKey = process.env.BRAVE_API_KEY;
-  if (!tavilyKey && !braveKey) {
-    return {
-      ok: false,
-      reason:
-        "No web search provider configured. Set TAVILY_API_KEY (https://app.tavily.com — 1000 free credits/mo, no card required) or BRAVE_API_KEY (https://brave.com/search/api — ~1000 free queries/mo via $5 monthly credit; card required) in .env.local.",
-    };
-  }
-
   const key = cacheKey(trimmed, opts);
   const cached = cacheGet(key);
   if (cached) return cached;
 
-  // Try Tavily first when available — LLM-optimized snippets are cheaper
-  // to feed across 5 providers than Brave's raw descriptions.
+  // Tavily first when available — LLM-cleaned snippets are higher
+  // signal than DDG's raw descriptions. Falls back to DuckDuckGo HTML
+  // scrape (zero-config, zero-key) on Tavily failure / missing key.
+  const tavilyKey = process.env.TAVILY_API_KEY;
   let result: WebSearchResponse;
   if (tavilyKey) {
     result = await tavilySearch(trimmed, opts);
-    if (!result.ok && braveKey) {
-      result = await braveSearch(trimmed, opts);
+    if (!result.ok) {
+      result = await ddgSearch(trimmed, opts);
     }
   } else {
-    result = await braveSearch(trimmed, opts);
+    result = await ddgSearch(trimmed, opts);
   }
   cachePut(key, result);
   return result;

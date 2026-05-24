@@ -706,7 +706,7 @@ export function registerAllTools(server: McpServer): void {
 
   server.tool(
     "apex_web_search",
-    "**Web search for grounding current-data queries.** Calls Tavily (LLM-optimized snippets, primary; 1000 free credits/mo, no card required) with Brave (raw snippets, ~$5/mo of complimentary credit; card required) as fallback. Returns up to N web results with title, URL, snippet, and publish date. Use this whenever the user's question requires data from after model training cutoff: current product catalogs, recent news, today's pricing, latest releases. Pair with apex_synthesize via the `context` arg — pass the formatted results as context — to get a current-grounded MoA answer. apex-engine's own fan-out auto-grounds in Wave 17b; call apex_web_search explicitly when you detect a stale-knowledge gap and want raw results.\n\nProvider keys are env-gated: at least one of TAVILY_API_KEY / BRAVE_API_KEY must be set in apex-engine's .env.local. Returns a clear error if neither key is configured.",
+    "**Web search for grounding current-data queries.** Calls Tavily (LLM-cleaned snippets — requires free TAVILY_API_KEY; no credit card) as primary, falling back to a DuckDuckGo HTML scrape (zero key, zero signup) when Tavily is unavailable. Returns up to N web results with title, URL, snippet, and publish date. Use this whenever the user's question requires data from after model training cutoff: current product catalogs, recent news, today's pricing, latest releases. Pair with apex_synthesize via the `context` arg — pass the formatted results as context — to get a current-grounded MoA answer. apex-engine's own fan-out auto-grounds in Wave 17b; call apex_web_search explicitly when you detect a stale-knowledge gap and want raw results.",
     {
       query: z
         .string()
@@ -730,10 +730,10 @@ export function registerAllTools(server: McpServer): void {
           "If set, restrict results to pages published in the last N days. Tavily uses this as a `days` filter; Brave maps to its bucketed `freshness` param (pd/pw/pm/py). Omit for no time filter.",
         ),
       provider: z
-        .enum(["auto", "tavily", "brave"])
+        .enum(["auto", "tavily", "ddg"])
         .default("auto")
         .describe(
-          "Force a specific provider. 'auto' (default) = Tavily primary, Brave fallback. Set 'tavily' or 'brave' to bypass auto-selection.",
+          "Force a specific provider. 'auto' (default) = Tavily primary, DuckDuckGo fallback. Set 'tavily' to require Tavily (errors if key missing) or 'ddg' to force the no-key DuckDuckGo scrape.",
         ),
     },
     async ({ query, maxResults, freshnessDays, provider }) => {
@@ -742,15 +742,9 @@ export function registerAllTools(server: McpServer): void {
         ...(freshnessDays !== undefined ? { freshnessDays } : {}),
       };
       let result;
-      if (provider === "tavily") {
-        const savedBrave = process.env.BRAVE_API_KEY;
-        delete process.env.BRAVE_API_KEY;
-        try {
-          result = await webSearch(query, opts);
-        } finally {
-          if (savedBrave) process.env.BRAVE_API_KEY = savedBrave;
-        }
-      } else if (provider === "brave") {
+      if (provider === "ddg") {
+        // Force DDG by transiently unsetting the Tavily key — webSearch's
+        // auto-router falls back to DDG when there's no Tavily key.
         const savedTavily = process.env.TAVILY_API_KEY;
         delete process.env.TAVILY_API_KEY;
         try {
@@ -758,6 +752,12 @@ export function registerAllTools(server: McpServer): void {
         } finally {
           if (savedTavily) process.env.TAVILY_API_KEY = savedTavily;
         }
+      } else if (provider === "tavily" && !process.env.TAVILY_API_KEY) {
+        result = {
+          ok: false as const,
+          reason:
+            "TAVILY_API_KEY not set. Either set the key in .env.local or use provider='ddg' / provider='auto' to fall back to DuckDuckGo.",
+        };
       } else {
         result = await webSearch(query, opts);
       }

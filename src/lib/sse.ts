@@ -44,7 +44,7 @@ export type SseEvent =
       // to every fan-out provider's prompt. UI renders a 🌐 grounded
       // badge on the synth panel.
       type: "web-grounded";
-      provider: "tavily" | "brave";
+      provider: "tavily" | "ddg";
       query: string;
       resultCount: number;
       reason: string;
