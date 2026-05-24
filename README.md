@@ -85,7 +85,7 @@ pnpm dev
 
 ### MCP setup — read this if you use Claude Code or Claude Desktop
 
-apex-engine ships an MCP server (7 tools: apex_fanout / apex_synthesize / apex_decompose / apex_report / apex_self_check / apex_qa_review / apex_security_review). **Every apex-engine user should run the setup once.**
+apex-engine ships an MCP server (10 tools: apex_fanout / apex_synthesize / apex_decompose / apex_report / apex_self_check / apex_qa_review / apex_self_security_check / apex_code_review / apex_security_review / apex_history_search). **Every apex-engine user should run the setup once.**
 
 **One-shot (recommended):**
 

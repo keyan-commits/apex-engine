@@ -31,9 +31,97 @@ export const REGISTERED_TOOL_NAMES = [
   "apex_report",
   "apex_self_check",
   "apex_qa_review",
+  "apex_self_security_check",
+  "apex_code_review",
   "apex_security_review",
   "apex_history_search",
 ];
+
+const CODE_REVIEW_MAX_CHARS = 8_000;
+
+function clipCodeOrError(code: string): { ok: true; code: string } | { ok: false; reason: string } {
+  if (typeof code !== "string" || code.trim().length === 0) {
+    return { ok: false, reason: "Empty code payload — nothing to review." };
+  }
+  if (code.length > CODE_REVIEW_MAX_CHARS) {
+    return {
+      ok: false,
+      reason: `Code payload is ${code.length} chars; max is ${CODE_REVIEW_MAX_CHARS}. Split per-file or per-function and call apex_code_review / apex_security_review again. (Streaming/pagination intentionally omitted to keep this MCP tool synchronous.)`,
+    };
+  }
+  return { ok: true, code };
+}
+
+function buildCodeReviewPrompt(args: {
+  code: string;
+  focus?: string;
+  language?: string;
+  reviewKind: "code" | "security";
+}): string {
+  const langHint = args.language ? `Language: ${args.language}.` : "Detect the language from the code below.";
+  const defaultFocus =
+    args.reviewKind === "security"
+      ? "auth/authz bugs, injection (SQL/cmd/template), unsafe deserialization, secret material in source, weak crypto, missing validation at trust boundaries, OWASP-top-10-relevant issues, supply-chain risks"
+      : "correctness, design, performance, idiomatic usage";
+  const focus = args.focus?.trim() || defaultFocus;
+  const reviewTitle = args.reviewKind === "security" ? "security audit" : "code review";
+
+  return [
+    `You are performing a critical ${reviewTitle}. Be specific, terse, and high-signal.`,
+    "",
+    `${langHint} Focus on: ${focus}.`,
+    "",
+    "Emit findings using this exact structure. Group by severity at the top level (## Critical, ## High, ## Medium, ## Low). For each finding inside a group, use these sub-headings:",
+    "",
+    "  ### <one-line title>",
+    "  - **Severity**: Critical | High | Medium | Low",
+    "  - **Location**: line range or logical block",
+    "  - **Explanation**: 1-3 sentences, root cause",
+    "  - **Recommended Fix**: concrete code change or pattern",
+    "",
+    "Severity anchor (CVSS-lite): Critical = 9-10 / exploitable now, High = 7-8, Medium = 4-6, Low = 1-3.",
+    "If the code is clean for a given severity, omit that section. If you find nothing actionable, say so explicitly under `## Summary` and stop.",
+    "Do NOT invent issues to fill space.",
+    "",
+    "CODE:",
+    "```",
+    args.code,
+    "```",
+  ].join("\n");
+}
+
+const CODE_REVIEW_SYNTH_SYSTEM_PROMPT = [
+  "You are synthesizing multiple expert code reviews into a single canonical review.",
+  "",
+  "Rules:",
+  "1. **Dedupe by root cause.** If two reviewers flag the same underlying bug (even with different wording or line numbers), merge them into ONE finding. Preserve the highest severity rating across reviewers. List the line numbers each reviewer cited.",
+  "2. **Rank by severity** (Critical → High → Medium → Low).",
+  "3. **Drop low-confidence noise**: if only ONE reviewer flagged a Medium-or-below issue AND it isn't obviously correct from the code, omit it.",
+  "4. **Do not invent issues**. If no reviewer reported a class of issue, do not add it.",
+  "",
+  "Output structure (use these headings verbatim):",
+  "",
+  "## Summary",
+  "1-3 sentences: highest-severity findings, overall posture.",
+  "",
+  "## Detailed Findings",
+  "(omit any severity group with zero findings)",
+  "",
+  "### Critical",
+  "...",
+  "### High",
+  "...",
+  "### Medium",
+  "...",
+  "### Low",
+  "...",
+  "",
+  "Each finding inside a group uses sub-headings: **Severity**, **Location** (cite all line ranges reviewers gave), **Explanation**, **Recommended Fix**.",
+  "",
+  "## Overall Risk Rating",
+  "One of: **P0** (stop-the-line; do NOT deploy), **P1** (fix before merge), **P2** (fix in backlog), **P3** (informational only).",
+  "Justify in one sentence.",
+].join("\n");
 
 type CollectedAnswer = {
   provider: Provider;
@@ -420,9 +508,14 @@ export function registerAllTools(server: McpServer): void {
     },
   );
 
+  // Note: renamed from `apex_security_review` to `apex_self_security_check`
+  // in Wave 16b. The bare `apex_security_review` name is now used by the
+  // project-agnostic MoA review tool below — semantic boundary: "self_*" =
+  // apex-engine's own gate, bare name = general-purpose code/security audit
+  // for any codebase the caller passes in.
   server.tool(
-    "apex_security_review",
-    "Run the apex-engine security checker: secret-scan over tracked files, pnpm audit for dep vulnerabilities (high/critical), and apex-specific invariants (no prompt content can land in feedback records, no console.log of prompts in catch blocks). On failure, writes an auto-feedback bug record with severity. Use alongside apex_qa_review whenever code or dependencies change.",
+    "apex_self_security_check",
+    "Run apex-engine's OWN security checker: secret-scan over tracked files, pnpm audit for dep vulnerabilities (high/critical), and apex-specific invariants (no prompt content lands in feedback records, no console.log of prompts in catch blocks). This is scoped to apex-engine's repo only — for reviewing arbitrary code from a different project, call `apex_security_review` instead. On failure, writes an auto-feedback bug record with severity.",
     {},
     async () => {
       const r = runScript("security:check", []);
@@ -433,6 +526,176 @@ export function registerAllTools(server: McpServer): void {
           {
             type: "text",
             text: withFlushNotice(`${status}\n\n\`\`\`\n${tail}\n\`\`\``),
+          },
+        ],
+      };
+    },
+  );
+
+  server.tool(
+    "apex_code_review",
+    "**Project-agnostic Mixture-of-Agents code review.** Pass arbitrary code (any language) + optional focus question; apex-engine fans the review out to GPT-4o-mini, Llama 3.3 70B, Gemini Flash, DeepSeek-chat, AND Claude (default ON for review tools — quality matters), then a synth pass dedupes findings, ranks by severity, and assigns an overall risk rating (P0 stop-the-line / P1 fix-before-merge / P2 backlog / P3 informational). Use this from ANY Claude Code session reviewing ANY codebase — not just apex-engine. For security-specific audits, use the sibling tool `apex_security_review`. Capped at 8000 chars input; split per-file/per-function for larger inputs.",
+    {
+      code: z
+        .string()
+        .min(1)
+        .describe("The source code to review. Any language. Max 8000 chars."),
+      focus: z
+        .string()
+        .optional()
+        .describe(
+          "Optional free-text question guiding the review. Default: 'correctness, design, performance, idiomatic usage'. Examples: 'is this thread-safe?', 'do the error paths leak resources?', 'audit the auth check'.",
+        ),
+      language: z
+        .string()
+        .optional()
+        .describe(
+          "Optional language hint (e.g. 'TypeScript', 'Rust', 'Python'). Auto-detected from the code if omitted; explicit hint speeds models up and reduces misclassification on short snippets.",
+        ),
+      context: z
+        .string()
+        .optional()
+        .describe(
+          "Disambiguation context from your session — short glossary or project description prepended to the synth's system prompt. Use it for project-specific acronyms/terms. Capped at 2000 chars; directive-shaped lines are stripped.",
+        ),
+      includeClaude: z
+        .boolean()
+        .default(true)
+        .describe(
+          "Include Claude in the fan-out. Default: true for review tools (quality > subscription spend). Set false to save on the Claude Max-5x quota when doing high-throughput batch reviews.",
+        ),
+    },
+    async ({ code, focus, language, context, includeClaude }) => {
+      const clip = clipCodeOrError(code);
+      if (!clip.ok) {
+        return { content: [{ type: "text", text: withFlushNotice(clip.reason) }] };
+      }
+      const reviewPrompt = buildCodeReviewPrompt({
+        code: clip.code,
+        focus,
+        language,
+        reviewKind: "code",
+      });
+      const answers = await runFanOut(reviewPrompt, { includeClaude, context });
+      const synthInput: FanOutAnswer[] = answers.map((a) => ({
+        provider: a.provider,
+        text: a.text,
+        error: a.error ?? undefined,
+      }));
+
+      const synthContextBlock =
+        context && context.trim()
+          ? `[Context from calling session]\n${context.trim()}\n[End context]\n\n`
+          : "";
+      const synthSystemPrompt = `${synthContextBlock}${CODE_REVIEW_SYNTH_SYSTEM_PROMPT}`;
+
+      let synthText = "";
+      let synthError: string | null = null;
+      try {
+        for await (const chunk of synthesize(reviewPrompt, synthInput, {
+          systemPrompt: synthSystemPrompt,
+        })) {
+          synthText += chunk;
+        }
+      } catch (err) {
+        synthError = err instanceof Error ? err.message : String(err);
+      }
+
+      const synthSection = synthError
+        ? `# Code Review (synth failed)\n\n_Error: ${synthError}_`
+        : `# Code Review — Synthesized\n\n${synthText.trim()}`;
+      return {
+        content: [
+          {
+            type: "text",
+            text: withFlushNotice(
+              `${synthSection}\n\n---\n\n# Individual Reviewer Responses\n\n${formatAnswers(answers)}`,
+            ),
+          },
+        ],
+      };
+    },
+  );
+
+  server.tool(
+    "apex_security_review",
+    "**Project-agnostic Mixture-of-Agents security audit.** Pass arbitrary code (any language) and apex-engine fans a security-focused review across 5 models including Claude (default ON), then synths the results — deduped, severity-ranked, with an overall P0-P3 risk rating. Default focus areas: auth/authz bugs, injection (SQL/cmd/template), unsafe deserialization, secrets in source, weak crypto, missing validation at trust boundaries, OWASP-top-10, supply-chain risk. For general (non-security-focused) code review use `apex_code_review`. For apex-engine's own self-check security gate, use `apex_self_security_check`. Capped at 8000 chars input.",
+    {
+      code: z
+        .string()
+        .min(1)
+        .describe("The source code to audit. Any language. Max 8000 chars."),
+      focus: z
+        .string()
+        .optional()
+        .describe(
+          "Optional free-text question narrowing the audit. Default: full OWASP-flavored sweep. Examples: 'is the JWT verification correct?', 'find all places user input flows into SQL', 'audit the file-upload handler for traversal'.",
+        ),
+      language: z
+        .string()
+        .optional()
+        .describe(
+          "Optional language hint. Auto-detected if omitted.",
+        ),
+      context: z
+        .string()
+        .optional()
+        .describe(
+          "Disambiguation context from your session. Capped at 2000 chars; directive-shaped lines are stripped.",
+        ),
+      includeClaude: z
+        .boolean()
+        .default(true)
+        .describe(
+          "Include Claude in the fan-out. Default: true (quality matters for security work).",
+        ),
+    },
+    async ({ code, focus, language, context, includeClaude }) => {
+      const clip = clipCodeOrError(code);
+      if (!clip.ok) {
+        return { content: [{ type: "text", text: withFlushNotice(clip.reason) }] };
+      }
+      const reviewPrompt = buildCodeReviewPrompt({
+        code: clip.code,
+        focus,
+        language,
+        reviewKind: "security",
+      });
+      const answers = await runFanOut(reviewPrompt, { includeClaude, context });
+      const synthInput: FanOutAnswer[] = answers.map((a) => ({
+        provider: a.provider,
+        text: a.text,
+        error: a.error ?? undefined,
+      }));
+
+      const synthContextBlock =
+        context && context.trim()
+          ? `[Context from calling session]\n${context.trim()}\n[End context]\n\n`
+          : "";
+      const synthSystemPrompt = `${synthContextBlock}${CODE_REVIEW_SYNTH_SYSTEM_PROMPT}`;
+
+      let synthText = "";
+      let synthError: string | null = null;
+      try {
+        for await (const chunk of synthesize(reviewPrompt, synthInput, {
+          systemPrompt: synthSystemPrompt,
+        })) {
+          synthText += chunk;
+        }
+      } catch (err) {
+        synthError = err instanceof Error ? err.message : String(err);
+      }
+
+      const synthSection = synthError
+        ? `# Security Review (synth failed)\n\n_Error: ${synthError}_`
+        : `# Security Review — Synthesized\n\n${synthText.trim()}`;
+      return {
+        content: [
+          {
+            type: "text",
+            text: withFlushNotice(
+              `${synthSection}\n\n---\n\n# Individual Reviewer Responses\n\n${formatAnswers(answers)}`,
+            ),
           },
         ],
       };
