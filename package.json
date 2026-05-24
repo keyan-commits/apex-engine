@@ -19,6 +19,7 @@
     "mcp": "tsx src/mcp/server.ts",
     "mcp:install": "tsx scripts/mcp-install.ts",
     "feedback:flush": "tsx scripts/feedback-flush.ts",
+    "feedback:watch": "tsx scripts/feedback-watch.ts",
     "qa:check": "tsx scripts/qa-check.ts",
     "qa:install-hooks": "tsx scripts/qa-install-hooks.ts",
     "security:check": "tsx scripts/security-check.ts"

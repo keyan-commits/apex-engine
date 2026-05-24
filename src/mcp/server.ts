@@ -3,6 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { fanOut, type FanOutItem } from "@/lib/engine";
 import { createReport } from "@/lib/feedback";
+import { flushAll, formatFlushNotice } from "@/lib/feedback-flush";
 import { saveHistory, type HistoryAnswer } from "@/lib/history";
 import { PROVIDERS, PROVIDER_LABELS, type Provider } from "@/lib/providers";
 import { findEnsemble } from "@/lib/roles";
@@ -101,6 +102,16 @@ const server = new McpServer({
   version: "0.1.0",
 });
 
+// Wrap every tool's text response with the optional flush nudge. When
+// auto-flush has failed and records have piled up, the user sees the
+// reminder every time they invoke any apex_* tool — they can't miss it
+// without acting. Returns the original text unchanged when no nudge
+// is warranted (the common case).
+function withFlushNotice(text: string): string {
+  const notice = formatFlushNotice();
+  return notice ? `${notice}\n\n---\n\n${text}` : text;
+}
+
 server.tool(
   "apex_fanout",
   "Fan out a prompt to multiple LLMs in parallel and return each model's individual answer. Models: GPT-4o-mini (via GitHub Models), Llama 3.3 70B (via Groq), Gemini 2.5 Flash (via AI Studio). Optionally include Claude via Claude Agent SDK (default off — avoids recursion when invoked from Claude Code). Optionally pass an ensembleId to assign roles (code-review / research / decision / brainstorm / legal / medical / marketing). Returns each model's response labeled by provider, separated by --- . Use when you want to compare how different LLMs answer the same question — cross-checking facts, diverse perspectives, research.",
@@ -133,7 +144,7 @@ server.tool(
       console.error("[mcp] history save failed:", err);
     }
     return {
-      content: [{ type: "text", text: formatAnswers(answers) }],
+      content: [{ type: "text", text: withFlushNotice(formatAnswers(answers)) }],
     };
   },
 );
@@ -200,7 +211,9 @@ server.tool(
       content: [
         {
           type: "text",
-          text: `${synthSection}\n\n---\n\n# Individual Responses\n\n${formatAnswers(answers)}`,
+          text: withFlushNotice(
+            `${synthSection}\n\n---\n\n# Individual Responses\n\n${formatAnswers(answers)}`,
+          ),
         },
       ],
     };
@@ -218,14 +231,14 @@ server.tool(
     if (!plan.ok) {
       return {
         content: [
-          { type: "text", text: `Planner failed: ${plan.reason}` },
+          { type: "text", text: withFlushNotice(`Planner failed: ${plan.reason}`) },
         ],
       };
     }
     await executeSubagents(plan.nodes, () => {});
     const briefing = nodesToBriefing(plan.nodes);
     return {
-      content: [{ type: "text", text: briefing }],
+      content: [{ type: "text", text: withFlushNotice(briefing) }],
     };
   },
 );
@@ -275,7 +288,9 @@ server.tool(
         content: [
           {
             type: "text",
-            text: `Feedback recorded as ${record.id} (kind=${record.kind}).\nWritten to: ${path}\n\nRun \`pnpm feedback:flush\` in the apex-engine repo to push it (and any other pending reports) as GitHub Issues.`,
+            text: withFlushNotice(
+              `Feedback recorded as ${record.id} (kind=${record.kind}).\nWritten to: ${path}\n\nApex-engine will auto-flush this to a GitHub Issue on the next interval. If you want to publish it immediately, run \`pnpm feedback:flush\` in the apex-engine repo.`,
+            ),
           },
         ],
       };
@@ -283,7 +298,7 @@ server.tool(
       const msg = err instanceof Error ? err.message : String(err);
       return {
         content: [
-          { type: "text", text: `Failed to record feedback: ${msg}` },
+          { type: "text", text: withFlushNotice(`Failed to record feedback: ${msg}`) },
         ],
       };
     }
@@ -310,7 +325,7 @@ server.tool(
   async () => {
     const result = selfCheck(REGISTERED_TOOL_NAMES);
     return {
-      content: [{ type: "text", text: formatSelfCheckReport(result) }],
+      content: [{ type: "text", text: withFlushNotice(formatSelfCheckReport(result)) }],
     };
   },
 );
@@ -368,7 +383,7 @@ server.tool(
       content: [
         {
           type: "text",
-          text: `${status}\n\n\`\`\`\n${tail}\n\`\`\``,
+          text: withFlushNotice(`${status}\n\n\`\`\`\n${tail}\n\`\`\``),
         },
       ],
     };
@@ -387,7 +402,7 @@ server.tool(
       content: [
         {
           type: "text",
-          text: `${status}\n\n\`\`\`\n${tail}\n\`\`\``,
+          text: withFlushNotice(`${status}\n\n\`\`\`\n${tail}\n\`\`\``),
         },
       ],
     };
@@ -397,3 +412,37 @@ server.tool(
 const transport = new StdioServerTransport();
 await server.connect(transport);
 console.error("[mcp] apex-engine MCP server connected on stdio");
+
+// Auto-flush feedback records → GitHub Issues. Runs once 5s after MCP
+// is responsive (so MCP availability isn't slowed by a backlog flush)
+// and then every APEX_FLUSH_INTERVAL_MS (default 30 min). Errors are
+// swallowed inside flushAll's exponential backoff — the MCP server
+// must never crash on a flush failure. Set APEX_NO_AUTO_FLUSH=1 to
+// disable (the standalone scripts/feedback-watch.ts daemon is a
+// separate option for users who don't keep CC open).
+const FLUSH_INTERVAL_MS = (() => {
+  const raw = process.env.APEX_FLUSH_INTERVAL_MS;
+  if (!raw) return 30 * 60_000;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 10_000 ? n : 30 * 60_000;
+})();
+if (process.env.APEX_NO_AUTO_FLUSH !== "1") {
+  const tickFlush = () => {
+    try {
+      const s = flushAll();
+      if (s.attempted > 0 || s.failed > 0) {
+        console.error(
+          `[mcp] auto-flush: attempted=${s.attempted} succeeded=${s.succeeded} failed=${s.failed} skipped=${s.skipped} reason=${s.reason}`,
+        );
+      }
+    } catch (err) {
+      console.error(
+        `[mcp] auto-flush threw (suppressed): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  };
+  setTimeout(tickFlush, 5_000);
+  // unref() so the interval doesn't keep the event loop alive if the
+  // server is otherwise idle and ready to exit.
+  setInterval(tickFlush, FLUSH_INTERVAL_MS).unref();
+}
