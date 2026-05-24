@@ -4,7 +4,7 @@ import { z } from "zod";
 import { fanOut, type FanOutItem } from "@/lib/engine";
 import { createReport } from "@/lib/feedback";
 import { formatFlushNotice } from "@/lib/feedback-flush";
-import { saveHistory, type HistoryAnswer } from "@/lib/history";
+import { listHistory, saveHistory, type HistoryAnswer, type HistoryEntry } from "@/lib/history";
 import { PROVIDERS, PROVIDER_LABELS, type Provider } from "@/lib/providers";
 import { exhaustedNonClaudeCount } from "@/lib/quota";
 import { findEnsemble } from "@/lib/roles";
@@ -32,6 +32,7 @@ export const REGISTERED_TOOL_NAMES = [
   "apex_self_check",
   "apex_qa_review",
   "apex_security_review",
+  "apex_history_search",
 ];
 
 type CollectedAnswer = {
@@ -433,6 +434,112 @@ export function registerAllTools(server: McpServer): void {
             type: "text",
             text: withFlushNotice(`${status}\n\n\`\`\`\n${tail}\n\`\`\``),
           },
+        ],
+      };
+    },
+  );
+
+  server.tool(
+    "apex_history_search",
+    "Search apex-engine's persistent conversation history via FTS5 (bm25-ranked). Use this when you want to find prior Q+A on a topic, recall what apex-engine answered before, or check if a similar question was already asked. Searches every column the FTS index covers (prompt + synth answer). Returns the matching entries with their id, age, prompt, the best answer (synth → claude → openai → llama → gemini fallback chain), and any tags. Most useful: \"have we asked about X before?\", \"what did the synth conclude about Y?\", or \"show me starred entries containing Z\".",
+    {
+      query: z
+        .string()
+        .min(1)
+        .describe(
+          "FTS5 search query. Whitespace-separated tokens are OR-combined with prefix matching. Examples: \"iPhone microscope\", \"rust async runtime\", \"MCP transport\".",
+        ),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(50)
+        .default(10)
+        .describe("Max results (1-50). Default 10."),
+      starredOnly: z
+        .boolean()
+        .default(false)
+        .describe("If true, restrict to entries the user has starred."),
+      ageDays: z
+        .number()
+        .int()
+        .min(1)
+        .optional()
+        .describe(
+          "If set, only return entries from the last N days. Useful for recent-context recall.",
+        ),
+    },
+    async ({ query, limit, starredOnly, ageDays }) => {
+      const fromMs =
+        typeof ageDays === "number"
+          ? Date.now() - ageDays * 24 * 60 * 60 * 1000
+          : undefined;
+      let results: HistoryEntry[];
+      try {
+        results = listHistory({
+          q: query,
+          limit,
+          starred: starredOnly,
+          ...(fromMs !== undefined ? { fromMs } : {}),
+        });
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: withFlushNotice(
+                `apex_history_search failed: ${err instanceof Error ? err.message : String(err)}`,
+              ),
+            },
+          ],
+        };
+      }
+      if (results.length === 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: withFlushNotice(
+                `No history entries match "${query}"${starredOnly ? " (starred only)" : ""}${ageDays ? ` in the last ${ageDays} days` : ""}.`,
+              ),
+            },
+          ],
+        };
+      }
+      const lines = [
+        `# Found ${results.length} match${results.length === 1 ? "" : "es"} for "${query}"`,
+        "",
+      ];
+      for (const e of results) {
+        const ageMs = Date.now() - e.createdAt;
+        const ageHours = Math.round(ageMs / (60 * 60_000));
+        const age =
+          ageHours < 24
+            ? `${ageHours}h ago`
+            : `${Math.round(ageHours / 24)}d ago`;
+        const best =
+          e.synthText ??
+          e.answers.claude?.text ??
+          e.answers.openai?.text ??
+          e.answers.llama?.text ??
+          e.answers.gemini?.text ??
+          "(no answer)";
+        const bestSnippet =
+          best.length > 600 ? `${best.slice(0, 597).trimEnd()}…` : best;
+        const star = e.starred ? "★ " : "";
+        const tagLabel = e.tags.length > 0 ? ` [${e.tags.join(", ")}]` : "";
+        lines.push(`## ${star}#${e.id} · ${age}${tagLabel}`);
+        lines.push(`**Q:** ${e.prompt}`);
+        lines.push("");
+        lines.push(`**Best answer:**`);
+        lines.push(bestSnippet);
+        lines.push("");
+        lines.push("---");
+        lines.push("");
+      }
+      return {
+        content: [
+          { type: "text", text: withFlushNotice(lines.join("\n")) },
         ],
       };
     },
