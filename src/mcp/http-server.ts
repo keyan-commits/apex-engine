@@ -36,6 +36,23 @@ const ALLOWED_ORIGINS = new Set([
   "http://[::1]:31001",
 ]);
 
+// Allowlist for the Host header sent by the HTTP client. Used in the
+// transport's built-in DNS-rebinding protection (security review MEDIUM).
+// The check is exact-match against {hostname, hostname:port}. Mirrors
+// ALLOWED_ORIGINS but with the http:// scheme stripped and both port-
+// stripped and port-included variants for safety.
+const ALLOWED_HOSTS = [
+  "localhost",
+  "127.0.0.1",
+  "[::1]",
+  `localhost:${process.env.APEX_MCP_PORT ?? "31001"}`,
+  `127.0.0.1:${process.env.APEX_MCP_PORT ?? "31001"}`,
+  `[::1]:${process.env.APEX_MCP_PORT ?? "31001"}`,
+  "localhost:3000",
+  "127.0.0.1:3000",
+  "[::1]:3000",
+];
+
 export function isOriginAllowed(origin: string | undefined): boolean {
   if (!origin || origin === "null") return true;
   return ALLOWED_ORIGINS.has(origin);
@@ -74,6 +91,13 @@ async function handleMcpRequest(req: IncomingMessage, res: ServerResponse) {
   registerAllTools(server);
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined, // stateless mode
+    // SDK-level DNS-rebinding protection (security review MEDIUM). When
+    // enabled, the SDK rejects requests whose Host or Origin headers
+    // aren't in the allowlist — defense-in-depth on top of our own
+    // Origin check above.
+    enableDnsRebindingProtection: true,
+    allowedHosts: ALLOWED_HOSTS,
+    allowedOrigins: Array.from(ALLOWED_ORIGINS),
   });
   // Connect the server BEFORE handleRequest so registered tools are
   // visible to the initial tools/list discovery.
@@ -94,6 +118,11 @@ async function handleMcpRequest(req: IncomingMessage, res: ServerResponse) {
   // res after this call.
   await transport.handleRequest(req, res, body);
 }
+
+// Recorded once at module load so /healthz returns a stable timestamp
+// for the lifetime of the process. Declared above buildServer so
+// closure capture is textually obvious.
+const STARTED_AT = new Date().toISOString();
 
 export function buildServer() {
   return createServer(async (req, res) => {
@@ -151,8 +180,6 @@ export function buildServer() {
     );
   });
 }
-
-const STARTED_AT = new Date().toISOString();
 
 function bootstrap() {
   const port = (() => {

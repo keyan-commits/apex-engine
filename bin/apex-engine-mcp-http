@@ -1,19 +1,30 @@
 #!/bin/sh
 # Streamable-HTTP MCP launcher. Uses `tsx watch` so the server respawns
 # automatically whenever any imported source file changes — Claude Code
-# reconnects to the same HTTP port on its next tool call and picks up the
-# new code without a CC restart.
+# reconnects to the same HTTP port on its next tool call and picks up
+# the new code without a CC restart.
 #
 # Keep this in foreground (Ctrl-C to stop, or send SIGTERM). Wrap in
 # `nohup` / launchd / screen if you want it detached.
 #
 # Port defaults to 31001 (override via APEX_MCP_PORT).
 # Disable auto-feedback-flush with APEX_NO_AUTO_FLUSH=1.
+#
+# QA-found bug fix: tsx does NOT forward Node's --env-file-if-exists
+# flag to the spawned process, so we shell-source .env.local here
+# (set -a auto-exports every assignment). This is the only way the
+# spawned tsx process actually sees GROQ_API_KEY / GITHUB_MODELS_TOKEN
+# / GOOGLE_GENERATIVE_AI_API_KEY when the user runs `pnpm mcp:http`
+# in a shell that didn't already inherit them from .zshrc / direnv.
 set -e
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$DIR"
+if [ -f "$DIR/.env.local" ]; then
+  set -a
+  . "$DIR/.env.local"
+  set +a
+fi
 exec "$DIR/node_modules/.bin/tsx" \
   watch \
-  --env-file-if-exists="$DIR/.env.local" \
   "$DIR/src/mcp/http-server.ts" \
   "$@"

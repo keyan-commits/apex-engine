@@ -1,12 +1,21 @@
 #!/bin/sh
-# apex-engine MCP server launcher.
-# Invokes the TypeScript server via the project-local tsx loader so we don't
-# need a build step. Sets cwd to the project root so SQLite data files land
-# in apex-engine/data/ regardless of where Claude Code spawns this from.
-# --env-file-if-exists loads provider API keys from .env.local (Next.js
-# auto-loads this for pnpm dev; the MCP server runs outside Next so we
-# load it here).
+# apex-engine MCP server launcher (stdio transport).
+#
+# Invokes the TypeScript server via the project-local tsx loader so we
+# don't need a build step. Sets cwd to the project root so SQLite data
+# files land in apex-engine/data/ regardless of where Claude Code spawns
+# this from.
+#
+# Sources .env.local (set -a auto-exports every assignment) so the
+# spawned tsx process sees provider API keys. tsx itself does NOT
+# forward Node's --env-file-if-exists flag, so a shell-level source
+# is the only reliable way to load .env.local for the MCP child.
 set -e
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$DIR"
-exec "$DIR/node_modules/.bin/tsx" --env-file-if-exists="$DIR/.env.local" "$DIR/src/mcp/server.ts" "$@"
+if [ -f "$DIR/.env.local" ]; then
+  set -a
+  . "$DIR/.env.local"
+  set +a
+fi
+exec "$DIR/node_modules/.bin/tsx" "$DIR/src/mcp/server.ts" "$@"
