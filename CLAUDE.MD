@@ -127,6 +127,7 @@ pnpm mcp             # stdio server (legacy — needs CC restart on code changes
 pnpm mcp:install     # register the stdio launcher with `claude mcp add`
 
 # Feedback channel:
+pnpm feedback:status # triage snapshot — pending outbox + open GH issues
 pnpm feedback:flush  # batch local feedback outbox → GitHub Issues
 pnpm feedback:watch  # long-lived auto-flush daemon
 

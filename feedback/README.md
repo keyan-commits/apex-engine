@@ -71,6 +71,20 @@ curl -X POST http://localhost:3000/api/feedback \
   -d '{"kind":"bug","title":"...","description":"..."}'
 ```
 
+## Triage rhythm
+
+Run `pnpm feedback:status` at the start (or end) of every work session
+to see what needs attention: the pending outbox count, the last
+auto-flush timestamp, and every open GitHub Issue labelled `feedback`.
+
+The post-commit hook auto-emits records when `pnpm qa:check` or
+`pnpm security:check` fails — including during intermediate commits in
+a multi-commit wave that get fixed in the next commit. Those stale
+records accumulate as open GitHub Issues that nobody closes
+automatically. `feedback:status` is the catch-up tool: close anything
+already fixed (with `gh issue close <N> --comment "Fixed in <commit>"`)
+and triage the rest.
+
 ## Flushing to GitHub Issues
 
 Two modes:
