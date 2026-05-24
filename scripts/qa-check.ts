@@ -66,11 +66,21 @@ type StepResult = {
 
 function runStep(name: string, cmd: string, args: string[]): StepResult {
   const start = Date.now();
+  // For the BUILD step specifically, redirect Next.js's output to a
+  // separate distDir (".next-qa") so we don't clobber the .next/
+  // directory that a running `pnpm dev` is serving from. Without this,
+  // webpack-runtime.js in the dev server's .next/ ends up referencing
+  // chunk ids that the build process has renumbered → "Cannot find
+  // module './647.js'" on every page load until the user restarts dev.
+  const env =
+    name === "build"
+      ? { ...process.env, APEX_BUILD_DIR: ".next-qa" }
+      : process.env;
   const r = spawnSync(cmd, args, {
     cwd: REPO_ROOT,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
-    env: process.env,
+    env,
   });
   const ok = r.status === 0;
   const output = `${r.stdout ?? ""}\n${r.stderr ?? ""}`.trim();
