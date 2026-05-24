@@ -175,7 +175,10 @@ export function createReport(input: CreateReportInput): {
   };
 
   const path = join(OUTBOX, `${id}.json`);
-  writeFileSync(path, JSON.stringify(record, null, 2), "utf8");
+  // `wx` flag = O_EXCL; fails if the file already exists. id is
+  // millisecond-stamp + 6-char random base36, so collisions are extremely
+  // unlikely — but a silent overwrite would be worse than throwing.
+  writeFileSync(path, JSON.stringify(record, null, 2), { flag: "wx", encoding: "utf8" });
   return { record, path };
 }
 

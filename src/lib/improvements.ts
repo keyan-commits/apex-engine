@@ -145,13 +145,20 @@ export function noteDisagreementMentioning(provider: Provider): void {
   });
 }
 
-// --- Detector 4: Cache miss thrash ---------------------------------------
-// Signal: the same content-addressed cache key MISSES N times in a 30-min
-// window. Indicates either (a) the cache TTL is too short for that key
-// pattern, or (b) the prompt is being subtly varied (e.g., trailing
-// whitespace, attachment ordering).
+// --- Detector 4: Cache cold-cluster --------------------------------------
+// Signal: many *distinct* cache keys whose hashed prefix collides into the
+// same 8-char bucket within a 30-min window. After the first miss on a
+// key, cachePut() makes that key warm — so re-misses on the SAME key are
+// rare. This detector instead catches a hot prefix bucket: 5+ different
+// keys clustering on the same 8-char hash prefix means either (a) the
+// hash space is being underused (key construction is too coarse), or (b)
+// the workload is unusually concentrated on a single prompt family.
+//
+// Renamed from "cache-miss-thrash" per QA review — the original name
+// implied detecting repeated misses on a SAME key, which can't happen
+// after cachePut().
 
-const CACHE_MISS_THRESHOLD = 5;
+const CACHE_COLD_CLUSTER_THRESHOLD = 5;
 const cacheMissCounters = new Map<string, ReturnType<typeof rollingCounter>>();
 
 export function noteCacheMiss(keyPrefix: string): void {
@@ -164,22 +171,22 @@ export function noteCacheMiss(keyPrefix: string): void {
     cacheMissCounters.set(short, counter);
   }
   const n = counter.record();
-  if (n < CACHE_MISS_THRESHOLD) return;
+  if (n < CACHE_COLD_CLUSTER_THRESHOLD) return;
   recordAutoImprovement({
     kind: "improvement",
-    signature: { pattern: "cache-miss-thrash" },
-    title: `Cache thrash on key prefix ${short} (${n} misses in 30min)`,
+    signature: { pattern: "cache-cold-cluster" },
+    title: `Cache prefix ${short} clustered ${n}× cold in 30min`,
     description:
       [
-        `A response-cache key prefix has missed ${n} times in the last 30 minutes.`,
+        `Five or more distinct cache keys collided onto the same 8-char hashed prefix \`${short}\` within the last 30 minutes. Each was a cold miss.`,
         ``,
         `Likely causes:`,
         ``,
-        `- The cache key includes a field that's unintentionally varying (e.g., timestamp, signal, or attachment ordering). Audit \`cacheKey()\` in \`src/lib/cache.ts\`.`,
-        `- The prompt is being normalized differently on retries (whitespace, casing).`,
-        `- The cache TTL is too short for the access pattern.`,
+        `- Workload concentration on a single prompt family — expected if the user is iterating on one task.`,
+        `- Cache-key construction underusing the hash space (e.g., a field is being omitted that should differentiate keys). Audit \`cacheKey()\` in \`src/lib/cache.ts\`.`,
+        `- The cache is being cleared between calls (TTL too short, or a manual flush).`,
         ``,
-        `Hashed key prefix: \`${short}\` (full key intentionally not recorded).`,
+        `Hashed key prefix: \`${short}\` (full keys intentionally not recorded).`,
       ].join("\n"),
     context: { occurrences: n, windowMinutes: 30 },
   });

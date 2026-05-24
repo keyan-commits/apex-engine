@@ -100,8 +100,9 @@ function safeStackHead(stack: string | undefined | null): string | undefined {
   const firstLine = stack.split("\n").find((l) => l.trim().startsWith("at "));
   if (!firstLine) return undefined;
   // Strip absolute paths; keep last 2 path segments + the position.
+  // Split on / and \ so Windows-style paths get stripped too.
   return firstLine.replace(/\((.*?)\)/, (_m, inner: string) => {
-    const parts = inner.split("/");
+    const parts = inner.split(/[\\/]/);
     return `(${parts.slice(-2).join("/")})`;
   });
 }

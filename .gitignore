@@ -40,3 +40,8 @@ data/
 
 # Local Claude settings backups
 .claude/settings.local.json.bak.*
+
+# data/ is already ignored, but listed here for clarity — covers
+# post-commit hook logs and the feedback inbox/outbox.
+data/logs/
+data/feedback/

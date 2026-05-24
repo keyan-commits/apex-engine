@@ -53,9 +53,36 @@ function runStep(name: string, cmd: string, args: string[]): StepResult {
   };
 }
 
+// Scrub potential credential leaks from subprocess output before it
+// lands in a feedback record. Mirrors scripts/security-check.ts's
+// SECRET_PATTERNS list — kept in sync manually.
+//
+// Security review MEDIUM-2: subprocesses inherit process.env and could
+// print env values into stdout/stderr (now or in a future test). The
+// feedback record body asserts "no prompt content" but said nothing
+// about credentials. Belt-and-braces redaction before persisting.
+const SECRET_REDACTION_PATTERNS: RegExp[] = [
+  /sk-[a-zA-Z0-9]{20,}/g,
+  /ghp_[a-zA-Z0-9]{30,}/g,
+  /gho_[a-zA-Z0-9]{30,}/g,
+  /AKIA[0-9A-Z]{16}/g,
+  /AIzaSy[a-zA-Z0-9_-]{30,}/g,
+  /gsk_[a-zA-Z0-9]{40,}/g,
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
+];
+
+function redactSecrets(text: string): string {
+  let out = text;
+  for (const p of SECRET_REDACTION_PATTERNS) {
+    out = out.replace(p, "<REDACTED-SECRET>");
+  }
+  return out;
+}
+
 function truncateTail(text: string, maxChars = 2000): string {
-  if (text.length <= maxChars) return text;
-  return `… (truncated to last ${maxChars} chars)\n${text.slice(-maxChars)}`;
+  const redacted = redactSecrets(text);
+  if (redacted.length <= maxChars) return redacted;
+  return `… (truncated to last ${maxChars} chars)\n${redacted.slice(-maxChars)}`;
 }
 
 function emitFailureRecord(failed: StepResult): void {

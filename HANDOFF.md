@@ -3,9 +3,21 @@
 > Updated after every completed task. Read this first to resume work in a new session — it captures volatile state that `CLAUDE.md` doesn't (CLAUDE.md is stable architecture; this is "where are we right now").
 
 **Last updated:** 2026-05-24
-**Last action:** Wave 7 fully shipped — five planned features (apex_decompose bug fix, A7 self-consistency, B3 cost tracking, B1 classifier, B2 solo mode, A1 rewriter), two ad-hoc additions (cross-instance feedback channel, `pnpm mcp:install` helper), and a QA polish pass that fixed two issues a test agent surfaced. 108/108 tests pass; `pnpm type-check` + `pnpm build` clean. Eight commits (`f6eaf5f`..`3f893e5`) pushed to `origin/main`. All MDs (CLAUDE.MD / HANDOFF.md / README.md / feedback/README.md) refreshed.
+**Last action:** Wave 8 shipped — five infrastructure features for "operate without restart + always-on QA + always-on security": F2 (auto bug reports with dedup/throttle), F4 (session-aware auto improvement detection, 5 detectors), F1 (apex_self_check drift detection MCP tool), F3 (pnpm qa:check + post-commit hook + apex_qa_review MCP), F5 (pnpm security:check: secret-scan + pnpm audit + apex invariants + apex_security_review MCP). Plus QA + Security review agents found 5 issues — all fixed (context allowlist on /api/feedback, secret-redaction in qa:check output, backslash-aware stack redaction, atomic feedback file writes, cache detector rename + accurate docs) + drift-detection test for REGISTERED_TOOL_NAMES. 134/134 tests pass; type-check + build + qa:check + security:check all clean. Post-commit hook running on every commit.
 
-**Blocked on:** Nothing. The locally-running MCP child process still holds the pre-Wave-7 code in memory, so `apex_decompose` (fixed schema) and the new `apex_report` tool only become callable after a Claude Code restart. Code on disk is correct.
+**Blocked on:** Nothing. The MCP child still holds pre-Wave-8 code in memory, so the four new MCP tools (`apex_self_check`, `apex_qa_review`, `apex_security_review`, and the F2/F4 auto-feedback emission paths called from server-side code which DO take effect for tool invocations) require a Claude Code restart to become callable. Code on disk is correct.
+
+## Wave 8 — what shipped (2026-05-24)
+
+| # | Feature | LOC | Commit |
+|---|---------|-----|--------|
+| F2 | Auto bug reports with in-memory dedup + throttle (1h window; escalation at counts 5/25/100). Wired into 3 catch blocks in `/api/ask` (fanout, synth, history.save). | ~460 | `dfb70d8` |
+| F4 | Session-aware auto improvement detection: 5 pattern detectors (solo-mode override, provider-failure cluster, synth-disagreement-with-model, cache-cold-cluster, synth-default-rerank). All signal-level inputs are structural (no prompt text). | ~400 | `4218028` |
+| F1 | `apex_self_check` MCP tool reports server-startup-commit vs current HEAD + working-tree dirty; gives the exact restart command. Never respawns. | ~220 | `17dcf02` |
+| F3 + F5 | `pnpm qa:check` (type-check + tests + opt build), `pnpm security:check` (secret-scan + pnpm audit + apex invariants), `pnpm qa:install-hooks` writes a backgrounded post-commit hook (never blocks the commit), `apex_qa_review` + `apex_security_review` MCP tools. | ~610 | `59cc3f1` |
+| QA/Sec fixes | QA + Security review agents filed bug reports via apex_report (proving the feedback loop); fixes: context allowlist on /api/feedback (MEDIUM security: HTTP body cannot stuff arbitrary fields), secret-redaction in qa:check output (MEDIUM security: env values can't leak), backslash-aware stack redaction for Windows paths, atomic feedback file writes with `wx` flag, cache detector rename + accurate docs, drift-test asserting REGISTERED_TOOL_NAMES matches `server.tool()` calls. | ~150 | `(incoming)` |
+
+134/134 tests pass; `pnpm qa:check` + `pnpm security:check` + `pnpm type-check` + `pnpm build` all clean.
 
 ## Wave 7 — what shipped (2026-05-24)
 

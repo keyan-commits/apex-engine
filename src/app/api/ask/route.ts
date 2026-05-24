@@ -177,8 +177,9 @@ function stackHeadOf(err: unknown): string | undefined {
   if (!stack) return undefined;
   const line = stack.split("\n").find((l) => l.trim().startsWith("at "));
   if (!line) return undefined;
+  // Split on both / and \ so Windows-style paths get stripped too.
   return line.replace(/\((.*?)\)/, (_m, inner: string) => {
-    const parts = inner.split("/");
+    const parts = inner.split(/[\\/]/);
     return `(${parts.slice(-2).join("/")})`;
   });
 }
