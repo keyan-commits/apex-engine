@@ -1,5 +1,6 @@
 import { saveAttachment, type AttachmentMeta } from "@/lib/attachments";
 import { answersSignature, cacheGet, cacheKey, cachePut } from "@/lib/cache";
+import { estimateCost } from "@/lib/cost";
 import { fanOut } from "@/lib/engine";
 import { userFacingMessage } from "@/lib/errors";
 import { getHistoryEntry, saveHistory, type HistoryAnswer } from "@/lib/history";
@@ -14,6 +15,7 @@ import {
   nodesToBriefing,
   type SubagentNode,
 } from "@/lib/subagents";
+import { findSynthesizer } from "@/lib/synthesizer-options";
 import { synthesize, type FanOutAnswer } from "@/lib/synthesize";
 
 export const runtime = "nodejs";
@@ -329,11 +331,31 @@ export async function POST(req: Request) {
               acc.error = message;
               send({ type: "error", provider: item.provider, message });
             }
+            // Drain token usage now that the stream has settled. Resolved in
+            // engine.streamFor; null when the provider omits usage (Claude
+            // Agent SDK) or the call errored before usage was reported.
+            try {
+              const u = await item.usage;
+              if (u) {
+                acc.inputTokens = u.inputTokens;
+                acc.outputTokens = u.outputTokens;
+                acc.costUsd = estimateCost(
+                  item.model,
+                  u.inputTokens,
+                  u.outputTokens,
+                );
+              }
+            } catch {
+              // usage drain failed — leave fields undefined
+            }
           }),
         );
 
         let synthText: string | null = null;
         let synthError: string | null = null;
+        let synthInputTokens: number | null = null;
+        let synthOutputTokens: number | null = null;
+        let synthCostUsd: number | null = null;
 
         if (body.synthesizerEnabled && !signal.aborted) {
           const synthInput: FanOutAnswer[] = useSubagents && subagentTree
@@ -371,12 +393,20 @@ export async function POST(req: Request) {
             send({ type: "synth-delta", text: cachedSynth });
             send({ type: "synth-done", latencyMs: 0 });
           } else {
+            // Callback-trapped value — wrapped in a ref so TS narrows
+            // `current` correctly inside the `if` below.
+            const synthUsageRef: {
+              current: { inputTokens: number; outputTokens: number } | null;
+            } = { current: null };
             try {
               for await (const chunk of synthesize(promptWithContext, synthInput, {
                 systemPrompt,
                 synthesizerId: effectiveSynthesizerId,
                 signal,
                 styleId: body.styleId,
+                onUsage: (u) => {
+                  synthUsageRef.current = u;
+                },
               })) {
                 synthText += chunk;
                 send({ type: "synth-delta", text: chunk });
@@ -392,10 +422,54 @@ export async function POST(req: Request) {
                 message: synthError,
               });
             }
+            if (synthUsageRef.current) {
+              const synthCfg = findSynthesizer(effectiveSynthesizerId);
+              synthInputTokens = synthUsageRef.current.inputTokens;
+              synthOutputTokens = synthUsageRef.current.outputTokens;
+              synthCostUsd = estimateCost(
+                synthCfg.model,
+                synthUsageRef.current.inputTokens,
+                synthUsageRef.current.outputTokens,
+              );
+            }
           }
         }
 
         const cancelled = signal.aborted;
+        // Aggregate per-call usage across fan-out + synth. Providers that
+        // didn't surface usage are omitted from the totals (rather than zero,
+        // which would mislead downstream routing decisions).
+        let totalInputTokens: number | null = null;
+        let totalOutputTokens: number | null = null;
+        let totalCostUsd: number | null = null;
+        const addUsage = (
+          inTok: number | undefined,
+          outTok: number | undefined,
+          cost: number | undefined,
+        ) => {
+          if (typeof inTok === "number") {
+            totalInputTokens = (totalInputTokens ?? 0) + inTok;
+          }
+          if (typeof outTok === "number") {
+            totalOutputTokens = (totalOutputTokens ?? 0) + outTok;
+          }
+          if (typeof cost === "number") {
+            totalCostUsd = (totalCostUsd ?? 0) + cost;
+          }
+        };
+        for (const p of PROVIDERS) {
+          addUsage(
+            answerMap[p].inputTokens,
+            answerMap[p].outputTokens,
+            answerMap[p].costUsd,
+          );
+        }
+        addUsage(
+          synthInputTokens ?? undefined,
+          synthOutputTokens ?? undefined,
+          synthCostUsd ?? undefined,
+        );
+
         try {
           const id = saveHistory({
             prompt: body.prompt,
@@ -411,6 +485,9 @@ export async function POST(req: Request) {
             attachments: body.attachments.length > 0 ? body.attachments : null,
             parentId: body.parentId,
             subagentTree: subagentTree ?? null,
+            totalInputTokens,
+            totalOutputTokens,
+            totalCostUsd,
           });
           send({ type: "history-saved", id });
         } catch (err) {

@@ -12,13 +12,17 @@ const githubModels = createOpenAICompatible({
 export const MAX_SUBQUESTIONS = 3;
 export const MAX_DEPTH = 2;
 
-const planSchema = z.object({
+// NOTE: depends_on is required (no .default([])) because Groq's strict JSON
+// schema validation rejects schemas where any property is missing from
+// `required[]`. The planner prompt instructs the model to emit [] for
+// independent sub-questions; we still defensively ?? [] when reading.
+export const planSchema = z.object({
   subquestions: z
     .array(
       z.object({
         id: z.number().int().min(1),
         text: z.string().min(3),
-        depends_on: z.array(z.number().int().min(1)).default([]),
+        depends_on: z.array(z.number().int().min(1)),
       }),
     )
     .min(1)
@@ -50,6 +54,7 @@ export async function decompose(
       prompt: `Decompose the following user request into AT MOST ${MAX_SUBQUESTIONS} self-contained sub-questions whose answers, taken together, would let a synthesizer produce the best final answer.
 
 Rules:
+- ALWAYS include the depends_on field on every sub-question — emit [] (empty array) when the sub-question is independent. NEVER omit the field.
 - Prefer independent sub-questions (depends_on: []). Only set depends_on when one truly cannot be answered without another.
 - Use small integer ids starting at 1.
 - depends_on must reference smaller ids only — never your own id, never a forward reference, no cycles.

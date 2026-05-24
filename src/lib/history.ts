@@ -54,6 +54,18 @@ function db(): Database.Database {
     ],
     ["tags_json", "ALTER TABLE history ADD COLUMN tags_json TEXT"],
     ["starred", "ALTER TABLE history ADD COLUMN starred INTEGER DEFAULT 0"],
+    [
+      "total_input_tokens",
+      "ALTER TABLE history ADD COLUMN total_input_tokens INTEGER",
+    ],
+    [
+      "total_output_tokens",
+      "ALTER TABLE history ADD COLUMN total_output_tokens INTEGER",
+    ],
+    [
+      "total_cost_usd",
+      "ALTER TABLE history ADD COLUMN total_cost_usd REAL",
+    ],
   ];
   for (const [col, sql] of migrations) {
     if (!cols.has(col)) d.exec(sql);
@@ -106,6 +118,9 @@ export type HistoryAnswer = {
   error: string | null;
   latencyMs?: number;
   role?: RoleId | null;
+  inputTokens?: number;
+  outputTokens?: number;
+  costUsd?: number;
 };
 
 export type HistoryEntry = {
@@ -126,6 +141,9 @@ export type HistoryEntry = {
   subagentTree: unknown[] | null;
   tags: string[];
   starred: boolean;
+  totalInputTokens: number | null;
+  totalOutputTokens: number | null;
+  totalCostUsd: number | null;
 };
 
 type SaveInput = {
@@ -142,6 +160,9 @@ type SaveInput = {
   attachments?: AttachmentMeta[] | null;
   parentId?: number | null;
   subagentTree?: unknown[] | null;
+  totalInputTokens?: number | null;
+  totalOutputTokens?: number | null;
+  totalCostUsd?: number | null;
 };
 
 export function saveHistory(input: SaveInput): number {
@@ -151,8 +172,9 @@ export function saveHistory(input: SaveInput): number {
          created_at, prompt, answers_json, synth_text, synth_error,
          project_id, cancelled, synthesizer_id, total_latency_ms,
          ensemble_id, roles_json, attachments_json, parent_id,
-         subagent_tree_json
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         subagent_tree_json, total_input_tokens, total_output_tokens,
+         total_cost_usd
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       Date.now(),
@@ -173,6 +195,9 @@ export function saveHistory(input: SaveInput): number {
       input.subagentTree && input.subagentTree.length > 0
         ? JSON.stringify(input.subagentTree)
         : null,
+      input.totalInputTokens ?? null,
+      input.totalOutputTokens ?? null,
+      input.totalCostUsd ?? null,
     );
   return Number(info.lastInsertRowid);
 }
@@ -195,6 +220,9 @@ type Row = {
   subagent_tree_json: string | null;
   tags_json: string | null;
   starred: number | null;
+  total_input_tokens: number | null;
+  total_output_tokens: number | null;
+  total_cost_usd: number | null;
 };
 
 function toEntry(r: Row): HistoryEntry {
@@ -249,12 +277,16 @@ function toEntry(r: Row): HistoryEntry {
     subagentTree,
     tags,
     starred: r.starred === 1,
+    totalInputTokens: r.total_input_tokens,
+    totalOutputTokens: r.total_output_tokens,
+    totalCostUsd: r.total_cost_usd,
   };
 }
 
 const SELECT_COLS = `id, created_at, prompt, answers_json, synth_text, synth_error,
   project_id, cancelled, synthesizer_id, total_latency_ms, ensemble_id, roles_json,
-  attachments_json, parent_id, subagent_tree_json, tags_json, starred`;
+  attachments_json, parent_id, subagent_tree_json, tags_json, starred,
+  total_input_tokens, total_output_tokens, total_cost_usd`;
 
 export type ListHistoryOptions = {
   limit?: number;

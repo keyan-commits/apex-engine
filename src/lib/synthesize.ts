@@ -3,6 +3,7 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { google } from "@ai-sdk/google";
 import { groq } from "@ai-sdk/groq";
 import { query } from "@anthropic-ai/claude-agent-sdk";
+import type { StreamUsage } from "./engine";
 import { PROVIDER_LABELS, type Provider } from "./providers";
 import { getRole, type RoleId } from "./roles";
 import { findSynthStyle } from "./synth-styles";
@@ -23,6 +24,10 @@ export type SynthesizeOptions = {
   systemPrompt?: string;
   signal?: AbortSignal;
   styleId?: string;
+  // Called once after streaming completes, with the synth model's token
+  // usage. null when the provider doesn't expose usage (Claude Agent SDK,
+  // or transient errors during the usage drain).
+  onUsage?: (usage: StreamUsage | null) => void;
 };
 
 const githubModels = createOpenAICompatible({
@@ -77,16 +82,21 @@ async function* synthClaudeAgent(
         : {}),
     },
   });
-  for await (const msg of result) {
-    if (signal?.aborted) throwAbort(signal);
-    if (msg.type !== "assistant") continue;
-    const content = msg.message?.content;
-    if (!Array.isArray(content)) continue;
-    for (const block of content) {
-      if (block.type === "text" && typeof block.text === "string") {
-        yield block.text;
+  try {
+    for await (const msg of result) {
+      if (signal?.aborted) throwAbort(signal);
+      if (msg.type !== "assistant") continue;
+      const content = msg.message?.content;
+      if (!Array.isArray(content)) continue;
+      for (const block of content) {
+        if (block.type === "text" && typeof block.text === "string") {
+          yield block.text;
+        }
       }
     }
+  } finally {
+    // Claude Agent SDK doesn't expose token usage in a standardized way.
+    opts.onUsage?.(null);
   }
 }
 
@@ -114,12 +124,36 @@ async function* synthViaAiSdk(
     },
   });
 
-  for await (const chunk of result.textStream) {
-    if (signal?.aborted) throwAbort(signal);
-    yield chunk;
+  let drainUsageOnExit = true;
+  try {
+    for await (const chunk of result.textStream) {
+      if (signal?.aborted) throwAbort(signal);
+      yield chunk;
+    }
+    if (captured) {
+      drainUsageOnExit = false;
+      throw captured;
+    }
+  } finally {
+    if (drainUsageOnExit && opts.onUsage) {
+      try {
+        const u = await result.usage;
+        const inputTokens =
+          typeof u?.inputTokens === "number" ? u.inputTokens : 0;
+        const outputTokens =
+          typeof u?.outputTokens === "number" ? u.outputTokens : 0;
+        opts.onUsage(
+          inputTokens === 0 && outputTokens === 0
+            ? null
+            : { inputTokens, outputTokens },
+        );
+      } catch {
+        opts.onUsage(null);
+      }
+    } else if (opts.onUsage) {
+      opts.onUsage(null);
+    }
   }
-
-  if (captured) throw captured;
 }
 
 function throwAbort(signal: AbortSignal): never {
@@ -175,7 +209,24 @@ function labelFor(a: FanOutAnswer): string {
   return role ? `${base} (${role.label})` : base;
 }
 
-function buildSynthPrompt(
+// Marker the synthesizer appends when models materially disagree. The UI
+// splits on this heading and renders the trailing section in an amber callout.
+export const DISAGREEMENT_HEADING = "## Notable Disagreements";
+
+const DISAGREEMENT_RE = /\n##\s+Notable\s+Disagreements\s*\n/i;
+
+export type SynthSplit = { body: string; disagreements: string | null };
+
+export function splitDisagreements(text: string): SynthSplit {
+  const m = DISAGREEMENT_RE.exec(text);
+  if (!m) return { body: text, disagreements: null };
+  return {
+    body: text.slice(0, m.index).trimEnd(),
+    disagreements: text.slice(m.index + m[0].length).trim() || null,
+  };
+}
+
+export function buildSynthPrompt(
   prompt: string,
   answers: FanOutAnswer[],
   styleSuffix: string,
@@ -191,7 +242,14 @@ function buildSynthPrompt(
 
   const stylePreamble = styleSuffix ? `\n\n${styleSuffix}` : "";
 
-  return `You are a synthesizer. ${answers.length} AI models were asked the same question.${rolePreamble} Your job: produce a single consolidated best answer by drawing on the strongest, most accurate insights from each response. Resolve contradictions. Cite sources by model name only when their views meaningfully differ. Be direct and useful — no preamble about your role.${stylePreamble}
+  // Self-consistency: only ask for the disagreement section when there is
+  // more than one valid answer to compare.
+  const consistencyClause =
+    answers.length >= 2
+      ? `\n\nSELF-CONSISTENCY: When the models materially disagree on a factual claim, a recommendation, or a numerical value, end your answer with a "${DISAGREEMENT_HEADING}" H2 section. Under it, list each disagreement as a single short bullet: "- <topic>: <Model A> says X; <Model B> says Y." Omit the section entirely (do not include the heading) when answers substantively agree. Do not flag mere stylistic or wording differences.`
+      : "";
+
+  return `You are a synthesizer. ${answers.length} AI models were asked the same question.${rolePreamble} Your job: produce a single consolidated best answer by drawing on the strongest, most accurate insights from each response. Resolve contradictions. Cite sources by model name only when their views meaningfully differ. Be direct and useful — no preamble about your role.${consistencyClause}${stylePreamble}
 
 ## Original question
 

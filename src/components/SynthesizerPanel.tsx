@@ -1,5 +1,6 @@
 "use client";
 
+import { splitDisagreements } from "@/lib/synthesize";
 import { CopyButton } from "./CopyButton";
 import { Markdown } from "./Markdown";
 import { StatusBadge, type Status } from "./StatusBadge";
@@ -32,6 +33,7 @@ export function SynthesizerPanel({
 }) {
   const latency = formatLatency(state.latencyMs);
   const chars = state.text.length;
+  const { body, disagreements } = splitDisagreements(state.text);
   return (
     <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-gradient-to-br from-amber-50 to-white dark:from-amber-950/20 dark:to-neutral-900 p-5">
       <div className="flex items-center justify-between mb-3 gap-3 flex-wrap">
@@ -73,7 +75,23 @@ export function SynthesizerPanel({
         {state.error ? (
           <p className="text-red-600 dark:text-red-400">{state.error}</p>
         ) : state.text ? (
-          <Markdown>{state.text}</Markdown>
+          <>
+            <Markdown>{body}</Markdown>
+            {disagreements && (
+              <div
+                className="mt-4 rounded-md border border-amber-300 dark:border-amber-700/60 bg-amber-50 dark:bg-amber-950/30 px-3 py-2 text-amber-900 dark:text-amber-200"
+                aria-label="Notable disagreements between models"
+              >
+                <div className="flex items-center gap-1.5 text-xs font-semibold mb-1">
+                  <span aria-hidden>⚠</span>
+                  <span>Notable disagreements</span>
+                </div>
+                <div className="text-xs">
+                  <Markdown>{disagreements}</Markdown>
+                </div>
+              </div>
+            )}
+          </>
         ) : (
           <p className="text-neutral-400 italic">
             {state.status === "idle"

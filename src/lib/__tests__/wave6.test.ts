@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { estimateCost, formatCost, rateFor } from "../cost";
 import { findTemplate, TEMPLATES } from "../templates";
 import { DEFAULT_SYNTH_STYLE, findSynthStyle, SYNTH_STYLE_LIST } from "../synth-styles";
-import { validateDag } from "../subagents";
+import { planSchema, validateDag } from "../subagents";
 import { estimateTokens, formatTokens } from "../tokens";
 
 describe("estimateTokens", () => {
@@ -30,8 +30,15 @@ describe("cost.ts", () => {
   it("rateFor returns zeros for unknown models", () => {
     expect(rateFor("not-a-real-model")).toEqual({ inputPer1M: 0, outputPer1M: 0 });
   });
-  it("estimateCost is zero for free-tier models", () => {
-    expect(estimateCost("openai/gpt-4o-mini", 1000, 1000)).toBe(0);
+  it("estimateCost returns paid-tier USD for known models", () => {
+    // gpt-4o-mini at 0.15 in / 0.60 out per 1M = 1000 in + 1000 out = $0.00075
+    expect(estimateCost("openai/gpt-4o-mini", 1000, 1000)).toBeCloseTo(
+      0.00075,
+      5,
+    );
+  });
+  it("estimateCost is zero for unknown / unpriced models", () => {
+    expect(estimateCost("not-a-real-model", 9999, 9999)).toBe(0);
   });
   it("formatCost handles free/<$0.01/normal", () => {
     expect(formatCost(0)).toBe("free");
@@ -109,5 +116,27 @@ describe("validateDag (sub-agents)", () => {
         { id: 4, text: "d", depends_on: [3] },
       ]),
     ).toMatchObject({ ok: false });
+  });
+});
+
+describe("planSchema (Groq strict JSON schema compat)", () => {
+  it("accepts well-formed plans with depends_on always present", () => {
+    const r = planSchema.safeParse({
+      subquestions: [
+        { id: 1, text: "first", depends_on: [] },
+        { id: 2, text: "second", depends_on: [1] },
+      ],
+    });
+    expect(r.success).toBe(true);
+  });
+  it("rejects sub-questions that omit depends_on — regression for Groq strict schema bug", () => {
+    // Groq's response_format requires every property to be in required[].
+    // If we make depends_on optional via .default([]), Zod emits it outside
+    // required and Groq rejects the schema. depends_on must be required and
+    // the LLM must emit [] for independent sub-questions.
+    const r = planSchema.safeParse({
+      subquestions: [{ id: 1, text: "first" }],
+    });
+    expect(r.success).toBe(false);
   });
 });

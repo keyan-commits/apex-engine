@@ -38,12 +38,21 @@ export type FanOutOptions = {
   enabled?: Partial<Record<Provider, boolean>>;
 };
 
+export type StreamUsage = {
+  inputTokens: number;
+  outputTokens: number;
+};
+
 export type FanOutItem = {
   provider: Provider;
   tier: Tier;
   model: string;
   role: RoleId | null;
   stream: AsyncIterable<string>;
+  // Resolves after the stream completes (or errors). null when the provider
+  // doesn't expose token counts (Claude Agent SDK) or when the stream fails
+  // before usage is reported.
+  usage: Promise<StreamUsage | null>;
 };
 
 function composeSystemPrompt(base: string, roleSuffix: string | null): string {
@@ -68,21 +77,23 @@ export function fanOut(prompt: string, opts: FanOutOptions = {}): FanOutItem[] {
     const roleId = (opts.roles?.[p] ?? null) as RoleId | null;
     const roleSuffix = roleSuffixFor(p, opts.roles);
     const sysForProvider = composeSystemPrompt(sys, roleSuffix);
+    const { stream, usage } = streamFor(
+      p,
+      model,
+      prompt,
+      sysForProvider,
+      attachments,
+      describePromises,
+      opts.signal,
+      timeoutMs,
+    );
     return {
       provider: p,
       tier,
       model,
       role: roleId,
-      stream: streamFor(
-        p,
-        model,
-        prompt,
-        sysForProvider,
-        attachments,
-        describePromises,
-        opts.signal,
-        timeoutMs,
-      ),
+      stream,
+      usage,
     };
   });
 }
@@ -142,18 +153,27 @@ function streamFor(
   describePromises: Map<string, Promise<string>>,
   parentSignal: AbortSignal | undefined,
   timeoutMs: number,
-): AsyncIterable<string> {
-  return {
+): { stream: AsyncIterable<string>; usage: Promise<StreamUsage | null> } {
+  let resolveUsage!: (u: StreamUsage | null) => void;
+  const usagePromise = new Promise<StreamUsage | null>((res) => {
+    resolveUsage = res;
+  });
+
+  const stream: AsyncIterable<string> = {
     [Symbol.asyncIterator]: () => streamImpl(),
   };
+  return { stream, usage: usagePromise };
 
-  async function* streamImpl() {
+  async function* streamImpl(): AsyncGenerator<string, void, undefined> {
     const signal = combinedSignal(parentSignal, timeoutMs);
     let resolved: ResolvedAttachment[] = [];
     if (attachments.length > 0) resolved = await resolveAttachments(attachments);
     try {
       if (provider === "claude") {
         yield* streamClaude(model, prompt, systemPrompt, resolved, signal);
+        // Claude Agent SDK doesn't surface input/output token counts in a
+        // standardized way; leave usage null.
+        resolveUsage(null);
       } else if (provider === "llama") {
         const descriptions = new Map<string, string>();
         if (resolved.length > 0) {
@@ -167,11 +187,21 @@ function streamFor(
           }
         }
         const textPrompt = buildTextOnlyPrompt(prompt, resolved, descriptions);
-        yield* streamGroqText(model, textPrompt, systemPrompt, signal);
+        const u = yield* streamGroqText(model, textPrompt, systemPrompt, signal);
+        resolveUsage(u);
       } else {
-        yield* streamMultimodal(provider, model, prompt, systemPrompt, resolved, signal);
+        const u = yield* streamMultimodal(
+          provider,
+          model,
+          prompt,
+          systemPrompt,
+          resolved,
+          signal,
+        );
+        resolveUsage(u);
       }
     } catch (err) {
+      resolveUsage(null);
       if (is429(err)) markPrimaryExhausted(provider);
       throw normalizeError(err, signal);
     }
@@ -228,7 +258,7 @@ async function* streamMultimodal(
   systemPrompt: string,
   resolved: ResolvedAttachment[],
   signal: AbortSignal,
-): AsyncGenerator<string> {
+): AsyncGenerator<string, StreamUsage | null, undefined> {
   const m = provider === "openai" ? githubModels(model) : google(model);
   let captured: Error | null = null;
   const messages = [
@@ -251,6 +281,7 @@ async function* streamMultimodal(
     yield chunk;
   }
   if (captured) throw captured;
+  return await drainUsage(result);
 }
 
 async function* streamGroqText(
@@ -258,7 +289,7 @@ async function* streamGroqText(
   prompt: string,
   systemPrompt: string,
   signal: AbortSignal,
-): AsyncGenerator<string> {
+): AsyncGenerator<string, StreamUsage | null, undefined> {
   let captured: Error | null = null;
   const result = streamText({
     model: groq(model),
@@ -274,6 +305,27 @@ async function* streamGroqText(
     yield chunk;
   }
   if (captured) throw captured;
+  return await drainUsage(result);
+}
+
+// Drain Vercel AI SDK's usage promise. Returns null when the provider
+// omits usage or the awaiter rejects (some providers don't surface tokens
+// on free-tier endpoints).
+async function drainUsage(
+  result: ReturnType<typeof streamText>,
+): Promise<StreamUsage | null> {
+  try {
+    const u = await result.usage;
+    if (!u) return null;
+    const inputTokens =
+      typeof u.inputTokens === "number" ? u.inputTokens : 0;
+    const outputTokens =
+      typeof u.outputTokens === "number" ? u.outputTokens : 0;
+    if (inputTokens === 0 && outputTokens === 0) return null;
+    return { inputTokens, outputTokens };
+  } catch {
+    return null;
+  }
 }
 
 function signalToError(signal: AbortSignal): Error {
