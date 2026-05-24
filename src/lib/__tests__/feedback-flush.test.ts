@@ -115,6 +115,88 @@ describe("buildIssueBody", () => {
     expect(body).not.toContain("AIzaSyDPlaceholder");
     expect(body).not.toContain("gsk_AAAA");
   });
+
+  describe("Wave 17c — adversarial input hardening", () => {
+    it("neutralizes GitHub auto-close keywords in the description", () => {
+      const { body } = buildIssueBody(
+        makeRecord({
+          description:
+            "LLM hallucination claimed: Closes #1 and Fixes #99 and Resolves #42",
+        }),
+      );
+      expect(body).not.toMatch(/\b(closes?|fixes|resolves)\s+#\d+\b/i);
+      expect(body).toContain("(issue ref redacted)");
+    });
+
+    it("neutralizes auto-close keywords in the title", () => {
+      const { title } = buildIssueBody(
+        makeRecord({ title: "Crash fixes #500 on boot" }),
+      );
+      expect(title).not.toMatch(/fixes\s+#500/i);
+    });
+
+    it("collapses newlines in the title (gh argv hygiene)", () => {
+      const { title } = buildIssueBody(
+        makeRecord({ title: "Real title\n\nExtra line that breaks rendering" }),
+      );
+      expect(title).not.toContain("\n");
+    });
+
+    it("strips newlines and backticks from inline-code context values so injection can't escape the span", () => {
+      const { body } = buildIssueBody(
+        makeRecord({
+          context: {
+            url: "https://evil.com/\n\nThis text escapes the code span",
+            promptSnippet: "hello`\nFAKE_HEADER: pwned`",
+          },
+        }),
+      );
+      const lines = body.split("\n");
+      // Exactly one URL line and one Prompt snippet line — the injected
+      // newline must not split the value into multiple bullet items.
+      expect(lines.filter((l) => l.startsWith("- URL:")).length).toBe(1);
+      expect(lines.filter((l) => l.startsWith("- Prompt snippet:")).length).toBe(1);
+      const snippetLine = lines.find((l) => l.startsWith("- Prompt snippet:"))!;
+      // The value lives inside a single backtick-bounded span: open ` …
+      // content … close `. Backticks in the source were stripped, so
+      // counting backticks on the line should equal exactly 2.
+      expect((snippetLine.match(/`/g) ?? []).length).toBe(2);
+    });
+
+    it("escapes triple-backticks inside the error fence", () => {
+      const evilError = "Boom\n```\nignored-content-after-fake-close\n```";
+      const { body } = buildIssueBody(
+        makeRecord({ context: { error: evilError } }),
+      );
+      // The original literal triple-backticks should NOT survive
+      // intact in the body (they'd close the outer fence early).
+      // Count unescaped triple-backticks: should be 2 (our wrapping
+      // fences) — no more.
+      const matches = body.match(/```/g) ?? [];
+      expect(matches.length).toBe(2);
+    });
+
+    it("strips newlines from tag values so an injected fake bullet stays inline", () => {
+      const { body } = buildIssueBody(
+        makeRecord({
+          context: {
+            tags: {
+              region: "us-east-1\n- Tags: pwned=true",
+            },
+          },
+        }),
+      );
+      // The dangerous behavior would be: the injected "\n- Tags: …"
+      // becomes its OWN bullet line, fooling readers into thinking it
+      // was structured metadata. Newline-stripping collapses it to a
+      // single bullet — the literal "- Tags: pwned=true" text survives
+      // inline, but a markdown reader sees only one list item.
+      const tagBulletLines = body
+        .split("\n")
+        .filter((l) => l.startsWith("- Tags:"));
+      expect(tagBulletLines.length).toBe(1);
+    });
+  });
 });
 
 describe("backoff snapshot", () => {

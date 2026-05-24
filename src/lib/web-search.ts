@@ -122,7 +122,18 @@ async function tavilySearch(
 
 // HTML-entity decoder. Covers the entities DDG actually emits (amp/lt/gt/
 // quot/#39/nbsp + numeric refs). Sufficient for snippet text; we are not
-// parsing arbitrary user HTML.
+// parsing arbitrary user HTML. Wave 17c: numeric refs are range-guarded
+// (0..0x10FFFF) so a malformed `&#xFFFFFFFF;` in an adversarial result
+// page can't crash the whole DDG fallback with RangeError.
+function safeFromCodePoint(cp: number): string {
+  if (!Number.isFinite(cp) || cp < 0 || cp > 0x10ffff) return "";
+  try {
+    return String.fromCodePoint(cp);
+  } catch {
+    return "";
+  }
+}
+
 function decodeEntities(s: string): string {
   return s
     .replace(/&amp;/g, "&")
@@ -132,9 +143,9 @@ function decodeEntities(s: string): string {
     .replace(/&#39;/g, "'")
     .replace(/&nbsp;/g, " ")
     .replace(/&#x([0-9a-f]+);/gi, (_m, h: string) =>
-      String.fromCodePoint(parseInt(h, 16)),
+      safeFromCodePoint(parseInt(h, 16)),
     )
-    .replace(/&#(\d+);/g, (_m, d: string) => String.fromCodePoint(parseInt(d, 10)));
+    .replace(/&#(\d+);/g, (_m, d: string) => safeFromCodePoint(parseInt(d, 10)));
 }
 
 function stripTags(s: string): string {
@@ -143,18 +154,33 @@ function stripTags(s: string): string {
 
 // DDG sometimes wraps result URLs in a redirector: //duckduckgo.com/l/?uddg=<encoded-url>.
 // Unwrap when present so callers get the canonical destination.
+// Wave 17c: explicit https/http scheme allowlist on the unwrapped URL —
+// previously a crafted `uddg=javascript:…` (case variants) or
+// `uddg=data:…` would slip through the case-sensitive
+// `startsWith("javascript:")` check in parseDdgHtml. Now we drop the
+// result entirely (return empty string) on any non-http(s) scheme.
 function unwrapDdgRedirect(href: string): string {
   if (!href) return href;
   const normalized = href.startsWith("//") ? `https:${href}` : href;
+  let candidate = normalized;
   try {
     const u = new URL(normalized);
     if (u.hostname === "duckduckgo.com" && u.pathname === "/l/") {
       const real = u.searchParams.get("uddg");
-      if (real) return decodeURIComponent(real);
+      // URLSearchParams.get() already URL-decodes once — DON'T double-
+      // decode; `decodeURIComponent` would throw URIError on legitimate
+      // `%` characters in the unwrapped URL.
+      if (real) candidate = real;
     }
-    return normalized;
   } catch {
-    return href;
+    return "";
+  }
+  try {
+    const final = new URL(candidate);
+    if (final.protocol !== "https:" && final.protocol !== "http:") return "";
+    return final.toString();
+  } catch {
+    return "";
   }
 }
 
@@ -178,7 +204,7 @@ function parseDdgHtml(html: string, max: number): WebSearchResult[] {
     const rawTitle = m[2];
     const rawSnippet = m[4];
     const url = unwrapDdgRedirect(decodeEntities(rawHref));
-    if (!url || url.startsWith("javascript:")) continue;
+    if (!url) continue;
     const title = decodeEntities(stripTags(rawTitle)).trim() || url;
     const snippet = trimSnippet(decodeEntities(stripTags(rawSnippet)));
     out.push({ title, url, snippet });
@@ -321,6 +347,15 @@ export async function webSearch(
   cachePut(key, result);
   return result;
 }
+
+// Wave 17c — test-only exports for the regex-heavy security-critical
+// parsers (decodeEntities, unwrapDdgRedirect). Keeping the surface
+// module-internal in normal callers but exposed under a __test field
+// for vitest. Not part of any public API.
+export const __test = {
+  decodeEntities,
+  unwrapDdgRedirect,
+};
 
 export function formatWebSearchAsMarkdown(r: WebSearchResponse): string {
   if (!r.ok) return `_Web search failed: ${r.reason}_`;
