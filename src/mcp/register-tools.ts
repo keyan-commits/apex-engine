@@ -6,6 +6,7 @@ import { createReport } from "@/lib/feedback";
 import { formatFlushNotice } from "@/lib/feedback-flush";
 import { saveHistory, type HistoryAnswer } from "@/lib/history";
 import { PROVIDERS, PROVIDER_LABELS, type Provider } from "@/lib/providers";
+import { exhaustedNonClaudeCount } from "@/lib/quota";
 import { findEnsemble } from "@/lib/roles";
 import { formatSelfCheckReport, selfCheck } from "@/lib/self-check";
 import {
@@ -137,14 +138,14 @@ function withFlushNotice(text: string): string {
 export function registerAllTools(server: McpServer): void {
   server.tool(
     "apex_fanout",
-    "Fan out a prompt to multiple LLMs in parallel and return each model's individual answer. Models: GPT-4o-mini (via GitHub Models), Llama 3.3 70B (via Groq), Gemini 2.5 Flash (via AI Studio). Optionally include Claude via Claude Agent SDK (default off — avoids recursion when invoked from Claude Code). Optionally pass an ensembleId to assign roles (code-review / research / decision / brainstorm / legal / medical / marketing). Returns each model's response labeled by provider, separated by --- . Use when you want to compare how different LLMs answer the same question — cross-checking facts, diverse perspectives, research.",
+    "Fan out a prompt to multiple LLMs in parallel and return each model's individual answer. Models: GPT-4o-mini (via GitHub Models), Llama 3.3 70B (via Groq), Gemini 2.5 Flash (via AI Studio). Optionally include Claude via Claude Agent SDK (default off — avoids recursion when invoked from Claude Code, EXCEPT when 2+ of the other providers are quota-exhausted, in which case Claude is auto-included to keep the fan-out useful). Optionally pass an ensembleId to assign roles (code-review / research / decision / brainstorm / legal / medical / marketing). Returns each model's response labeled by provider, separated by --- . Use when you want to compare how different LLMs answer the same question — cross-checking facts, diverse perspectives, research.",
     {
       prompt: z.string().describe("The question to ask all models."),
       includeClaude: z
         .boolean()
         .default(false)
         .describe(
-          "Include the Claude slot via Claude Agent SDK. Default: false to avoid recursion when invoked from Claude Code itself.",
+          "Include the Claude slot via Claude Agent SDK. Default: false to avoid recursion when invoked from Claude Code itself. When 2+ non-Claude providers are exhausted, Claude is auto-included regardless of this flag (the alternative is an empty fan-out).",
         ),
       ensembleId: z
         .string()
@@ -154,7 +155,16 @@ export function registerAllTools(server: McpServer): void {
         ),
     },
     async ({ prompt, includeClaude, ensembleId }) => {
-      const answers = await runFanOut(prompt, { includeClaude, ensembleId });
+      // Wave 11 recursion-guard adjustment: when 2+ non-Claude providers
+      // are exhausted, ignore the default-off behavior and bring Claude
+      // into the fan-out anyway. Without this the user gets a fan-out
+      // with 0-1 valid answers and a useless synth.
+      const effectiveIncludeClaude =
+        includeClaude || exhaustedNonClaudeCount() >= 2;
+      const answers = await runFanOut(prompt, {
+        includeClaude: effectiveIncludeClaude,
+        ensembleId,
+      });
       try {
         saveHistory({
           prompt,

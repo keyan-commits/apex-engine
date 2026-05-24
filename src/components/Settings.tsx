@@ -23,6 +23,8 @@ export function Settings({
   onChangeSynthesizer,
   ecoMode,
   onChangeEcoMode,
+  favorClaudeWhenDegraded,
+  onChangeFavorClaude,
   enabledProviders,
   onToggleProvider,
   synthStyleId,
@@ -34,6 +36,8 @@ export function Settings({
   onChangeSynthesizer: (id: string) => void;
   ecoMode: boolean;
   onChangeEcoMode: (eco: boolean) => void;
+  favorClaudeWhenDegraded: boolean;
+  onChangeFavorClaude: (favor: boolean) => void;
   enabledProviders: Record<Provider, boolean>;
   onToggleProvider: (p: Provider, enabled: boolean) => void;
   synthStyleId: SynthStyleId;
@@ -146,6 +150,42 @@ export function Settings({
                 gpt-oss-20b
               </code>{" "}
               synthesizer.
+            </p>
+          </div>
+
+          <div className="border-t border-neutral-200 dark:border-neutral-800 pt-4">
+            <label className="text-[10px] uppercase tracking-wide text-neutral-500 block mb-2">
+              Favor Claude when degraded
+            </label>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={favorClaudeWhenDegraded}
+              onClick={() => onChangeFavorClaude(!favorClaudeWhenDegraded)}
+              className="flex items-center gap-2 w-full text-left"
+            >
+              <span
+                className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition ${
+                  favorClaudeWhenDegraded
+                    ? "bg-indigo-500"
+                    : "bg-neutral-300 dark:bg-neutral-700"
+                }`}
+              >
+                <span
+                  className={`inline-block h-3 w-3 rounded-full bg-white transition-transform ${
+                    favorClaudeWhenDegraded ? "translate-x-5" : "translate-x-1"
+                  }`}
+                />
+              </span>
+              <span className="text-sm">{favorClaudeWhenDegraded ? "On" : "Off"}</span>
+            </button>
+            <p className="text-[11px] text-neutral-500 mt-1.5 leading-relaxed">
+              When 2+ non-Claude providers are exhausted and Claude is still
+              available, auto-upgrade the synthesizer to{" "}
+              <code className="text-[10px] px-1 rounded bg-neutral-100 dark:bg-neutral-800">
+                claude-sonnet-4-6
+              </code>
+              . Uses your Claude Code subscription. Disabled in Eco mode.
             </p>
           </div>
 

@@ -79,6 +79,16 @@ export function getAllQuotaStates(): QuotaState[] {
   }));
 }
 
+// Wave 11: which non-Claude providers look exhausted right now? Drives
+// the degradation-aware synth fallback (when 2+ non-Claude providers
+// are out, auto-upgrade the synth to Claude-Sonnet if Claude is still
+// available).
+export function exhaustedNonClaudeCount(): number {
+  return getAllQuotaStates()
+    .filter((s) => s.provider !== "claude")
+    .filter((s) => !s.primaryAvailable).length;
+}
+
 function defaultExhaustionUntil(provider: Provider): number {
   if (provider === "gemini") {
     const d = new Date();

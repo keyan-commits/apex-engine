@@ -25,6 +25,7 @@ import {
   nodesToBriefing,
   type SubagentNode,
 } from "@/lib/subagents";
+import { exhaustedNonClaudeCount } from "@/lib/quota";
 import { findSynthesizer } from "@/lib/synthesizer-options";
 import { synthesize, type FanOutAnswer } from "@/lib/synthesize";
 
@@ -48,6 +49,10 @@ type ParsedBody = {
   // if the classifier labels the prompt "simple". Default false (let
   // B2 solo mode take effect on simple prompts).
   forceFullFanout: boolean;
+  // Wave 11: when true (default), auto-upgrade the synth to Claude
+  // Sonnet whenever 2+ non-Claude providers are exhausted AND Claude
+  // is available AND Eco mode is off. Settings UI exposes a toggle.
+  favorClaudeWhenDegraded: boolean;
 };
 
 async function parseRequest(req: Request): Promise<{ ok: true; body: ParsedBody } | { ok: false; error: string }> {
@@ -106,6 +111,7 @@ async function parseRequest(req: Request): Promise<{ ok: true; body: ParsedBody 
         ecoMode: json("ecoMode") === "true",
         styleId: json("styleId") ?? undefined,
         forceFullFanout: json("forceFullFanout") === "true",
+        favorClaudeWhenDegraded: json("favorClaudeWhenDegraded") !== "false",
       },
     };
   }
@@ -131,6 +137,10 @@ async function parseRequest(req: Request): Promise<{ ok: true; body: ParsedBody 
       ecoMode: body.ecoMode === true,
       styleId: typeof body.styleId === "string" ? body.styleId : undefined,
       forceFullFanout: body.forceFullFanout === true,
+      favorClaudeWhenDegraded:
+        typeof body.favorClaudeWhenDegraded === "boolean"
+          ? body.favorClaudeWhenDegraded
+          : true,
     },
   };
 }
@@ -520,6 +530,64 @@ export async function POST(req: Request) {
                 role: answerMap[p].role ?? null,
               }));
 
+          // Wave 11: count valid (non-error, non-empty) answers BEFORE
+          // running the synth. With N≤1 the synth is pure pass-through
+          // noise — surface the raw answer (or a clean "no answers"
+          // message) and skip the synth call entirely.
+          const validCount = synthInput.filter(
+            (a) => !a.error && a.text.trim().length > 0,
+          ).length;
+
+          if (validCount === 0 && !useSubagents) {
+            send({ type: "synth-open" });
+            send({
+              type: "synth-delta",
+              text: "All providers failed or were skipped. No synthesis available.",
+            });
+            send({ type: "synth-done", latencyMs: 0 });
+            synthText =
+              "All providers failed or were skipped. No synthesis available.";
+          } else if (validCount === 1 && !useSubagents) {
+            const single = synthInput.find(
+              (a) => !a.error && a.text.trim().length > 0,
+            )!;
+            const label =
+              PROVIDERS.includes(single.provider) ?
+                single.provider.toUpperCase() : "(provider)";
+            send({ type: "synth-open" });
+            const noteText =
+              `_Only ${label} responded — passing through directly, no synthesis._\n\n${single.text}`;
+            send({ type: "synth-delta", text: noteText });
+            send({ type: "synth-done", latencyMs: 0 });
+            synthText = noteText;
+          } else {
+
+          // Wave 11: when 2+ non-Claude providers are exhausted AND
+          // the user hasn't opted out AND Eco mode is off AND Claude
+          // is among the valid answers, auto-upgrade the synth to
+          // claude-sonnet so the consolidated answer is written by
+          // the highest-quality model the user has access to.
+          const claudeIsValid = synthInput.some(
+            (a) => a.provider === "claude" && !a.error && a.text.trim().length > 0,
+          );
+          const shouldUpgrade =
+            body.favorClaudeWhenDegraded &&
+            !body.ecoMode &&
+            claudeIsValid &&
+            exhaustedNonClaudeCount() >= 2 &&
+            effectiveSynthesizerId !== "claude-sonnet";
+          if (shouldUpgrade) {
+            log.info(
+              `degraded-mode synth upgrade: ${effectiveSynthesizerId ?? "(default)"} → claude-sonnet`,
+            );
+            effectiveSynthesizerId = "claude-sonnet";
+            send({
+              type: "warning",
+              message:
+                "Other providers are exhausted; upgrading synth to Claude Sonnet for quality.",
+            });
+          }
+
           send({ type: "synth-open" });
           synthText = "";
           const synthStart = Date.now();
@@ -601,6 +669,7 @@ export async function POST(req: Request) {
               );
             }
           }
+          } // end of validCount >= 2 branch
         }
 
         const cancelled = signal.aborted;

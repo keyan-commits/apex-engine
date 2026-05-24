@@ -40,6 +40,7 @@ const SYNTH_STYLE_KEY = "apex.synth-style";
 const ENSEMBLE_ID_KEY = "apex.ensemble-id";
 const ECO_MODE_KEY = "apex.eco-mode";
 const ENABLED_PROVIDERS_KEY = "apex.enabled-providers";
+const FAVOR_CLAUDE_KEY = "apex.favor-claude-when-degraded";
 const COMPACT_MODE_KEY = "apex.compact-mode";
 
 export type SubagentDisplayNode = {
@@ -369,6 +370,15 @@ export default function Home() {
     if (typeof window === "undefined") return false;
     return window.localStorage.getItem(ECO_MODE_KEY) === "true";
   });
+  // Wave 11: when on (default), auto-upgrade the synth to Claude Sonnet
+  // when 2+ non-Claude providers are exhausted AND Claude is available
+  // AND Eco mode is off. Stored client-side so the user can pin their
+  // preference, sent with every /api/ask request.
+  const [favorClaude, setFavorClaude] = useState<boolean>(() => {
+    if (typeof window === "undefined") return true;
+    const stored = window.localStorage.getItem(FAVOR_CLAUDE_KEY);
+    return stored == null ? true : stored === "true";
+  });
   const [enabledProviders, setEnabledProviders] = useState<Record<Provider, boolean>>(() => {
     const defaults: Record<Provider, boolean> = {
       claude: true,
@@ -419,6 +429,10 @@ export default function Home() {
   useEffect(() => {
     window.localStorage.setItem(ECO_MODE_KEY, String(ecoMode));
   }, [ecoMode]);
+
+  useEffect(() => {
+    window.localStorage.setItem(FAVOR_CLAUDE_KEY, String(favorClaude));
+  }, [favorClaude]);
 
   useEffect(() => {
     window.localStorage.setItem(
@@ -515,6 +529,7 @@ export default function Home() {
         if (parentId != null) fd.set("parentId", String(parentId));
         fd.set("enabled", JSON.stringify(enabledProviders));
         fd.set("ecoMode", String(ecoMode));
+        fd.set("favorClaudeWhenDegraded", String(favorClaude));
         fd.set("styleId", synthStyleId);
         if (opts.forceFullFanout) fd.set("forceFullFanout", "true");
         for (const f of files) fd.append("attachments", f, f.name);
@@ -530,6 +545,7 @@ export default function Home() {
           parentId,
           enabled: enabledProviders,
           ecoMode,
+          favorClaudeWhenDegraded: favorClaude,
           styleId: synthStyleId,
           forceFullFanout: opts.forceFullFanout === true,
         });
@@ -808,6 +824,8 @@ export default function Home() {
         onChangeSynthesizer={setSynthesizerId}
         ecoMode={ecoMode}
         onChangeEcoMode={setEcoMode}
+        favorClaudeWhenDegraded={favorClaude}
+        onChangeFavorClaude={setFavorClaude}
         enabledProviders={enabledProviders}
         onToggleProvider={(p, enabled) =>
           setEnabledProviders((prev) => ({ ...prev, [p]: enabled }))

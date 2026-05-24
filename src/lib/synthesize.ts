@@ -28,6 +28,10 @@ export type SynthesizeOptions = {
   // usage. null when the provider doesn't expose usage (Claude Agent SDK,
   // or transient errors during the usage drain).
   onUsage?: (usage: StreamUsage | null) => void;
+  // Wave 11: enable per-answer compression before building the synth
+  // prompt. Default true so the synth never blows its context window
+  // when 4 verbose base answers arrive. Override only for tests.
+  compressInputs?: boolean;
 };
 
 const githubModels = createOpenAICompatible({
@@ -49,7 +53,16 @@ export async function* synthesize(
 
   const config = findSynthesizer(opts.synthesizerId);
   const style = findSynthStyle(opts.styleId);
-  const synthPrompt = buildSynthPrompt(prompt, valid, style.suffix);
+  // Wave 11: compress base answers before building the synth prompt so
+  // 4 verbose answers can't blow the synth's context window. The cross-
+  // model research recommended max(5% of context, 1500 tokens) per
+  // answer. Char/4 estimator is enough — we only need an order-of-
+  // magnitude guard, not a precise tokenizer.
+  const compressed =
+    opts.compressInputs === false
+      ? valid
+      : compressAnswersForSynth(valid, config);
+  const synthPrompt = buildSynthPrompt(prompt, compressed, style.suffix);
 
   if (config.provider === "anthropic-agent") {
     yield* synthClaudeAgent(synthPrompt, config.model, opts);
@@ -219,6 +232,43 @@ export {
 } from "./synth-format";
 
 import { DISAGREEMENT_HEADING } from "./synth-format";
+
+// Approximate context window for each synth model (input + output combined).
+// Values in tokens. Sourced from each provider's docs as of 2026-05-24.
+const SYNTH_CONTEXT_WINDOWS: Record<string, number> = {
+  "openai/gpt-oss-120b": 131_000,
+  "openai/gpt-oss-20b": 131_000,
+  "claude-sonnet-4-6": 200_000,
+  "openai/gpt-4o-mini": 128_000,
+  "gemini-2.5-flash": 1_000_000,
+};
+
+// Compress each base answer to at most max(5% of synth window / N, 1500
+// tokens, but capped at 4000 tokens). Char/4 used as a fast token-count
+// proxy. Truncation preserves the first half + last half (heuristic for
+// keeping the lead and conclusion of each model's answer).
+export function compressAnswersForSynth(
+  answers: FanOutAnswer[],
+  config: SynthesizerOption,
+): FanOutAnswer[] {
+  if (answers.length === 0) return answers;
+  const ctx = SYNTH_CONTEXT_WINDOWS[config.model] ?? 128_000;
+  const budgetPerAnswer = Math.max(
+    1500,
+    Math.min(4000, Math.floor((ctx * 0.5) / answers.length / 4)),
+  );
+  const charBudget = budgetPerAnswer * 4;
+  return answers.map((a) => {
+    if (a.text.length <= charBudget) return a;
+    const half = Math.floor(charBudget / 2) - 30;
+    const head = a.text.slice(0, half).trimEnd();
+    const tail = a.text.slice(-half).trimStart();
+    return {
+      ...a,
+      text: `${head}\n\n…[${a.text.length - charBudget} chars elided to fit synth context]…\n\n${tail}`,
+    };
+  });
+}
 
 export function buildSynthPrompt(
   prompt: string,
