@@ -339,6 +339,18 @@ function reducer(state: State, action: Action): State {
               soloMode: ev.soloMode,
             },
           };
+        case "follow-up-detected":
+          // Wave 14 — server auto-detected a follow-up to a prior
+          // history entry. For high confidence the parentId was
+          // already threaded server-side; for medium we just surface
+          // the suggestion. UI shows a chip in the notice slot.
+          return {
+            ...state,
+            notice:
+              ev.confidence === "high"
+                ? `Auto-threaded from history #${ev.parentId}: "${ev.parentPromptSnippet}"`
+                : `Looks like a follow-up to history #${ev.parentId}? Click "Continue thread" if so.`,
+          };
       }
     }
   }

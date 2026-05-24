@@ -30,6 +30,16 @@ export type SseEvent =
       signals: string[];
     }
   | {
+      // Wave 14 — server auto-detected a follow-up to a prior history
+      // entry and threaded its context in. UI renders an "Auto-threaded
+      // from #<id>" chip with an undo affordance.
+      type: "follow-up-detected";
+      parentId: number;
+      parentPromptSnippet: string;
+      confidence: "high" | "medium";
+      signals: string[];
+    }
+  | {
       type: "subagent-plan";
       nodes: Array<{
         id: number;

@@ -5,6 +5,7 @@ import { classify } from "@/lib/classify";
 import { estimateCost } from "@/lib/cost";
 import { fanOut } from "@/lib/engine";
 import { userFacingMessage } from "@/lib/errors";
+import { detectFollowUp } from "@/lib/follow-up";
 import {
   noteCacheMiss,
   noteDisagreementMentioning,
@@ -13,7 +14,7 @@ import {
   noteSynthSwitch,
 } from "@/lib/improvements";
 import { DEFAULT_SYNTHESIZER_ID } from "@/lib/synthesizer-options";
-import { getHistoryEntry, saveHistory, type HistoryAnswer } from "@/lib/history";
+import { getHistoryEntry, listHistory, saveHistory, type HistoryAnswer } from "@/lib/history";
 import { logger } from "@/lib/log";
 import { PROVIDERS, type Provider } from "@/lib/providers";
 import { getProject } from "@/lib/projects";
@@ -326,8 +327,56 @@ export async function POST(req: Request) {
     log.info("solo mode engaged — running Llama only, synth disabled");
   }
 
+  // Wave 14 — auto follow-up detection. If the client didn't explicitly
+  // pass a parentId (i.e. the user didn't click "Continue thread"),
+  // look at the most recent history entry and run heuristic follow-up
+  // detection. High-confidence signals auto-thread; medium/low only
+  // surface a banner via the SSE event so the user can manually decide.
+  let effectiveParentId = body.parentId;
+  let followUpEventPayload: {
+    parentId: number;
+    parentPromptSnippet: string;
+    confidence: "high" | "medium";
+    signals: string[];
+  } | null = null;
+  if (body.parentId == null) {
+    try {
+      const recent = listHistory({
+        limit: 1,
+        projectId: body.projectId ?? undefined,
+      });
+      const lastEntry = recent[0] ?? null;
+      const fu = detectFollowUp(body.prompt, lastEntry);
+      if (fu.confidence === "high" && lastEntry) {
+        effectiveParentId = lastEntry.id;
+        log.info(
+          `auto-threaded follow-up to history #${lastEntry.id} (signals=${fu.signals.join(",")})`,
+        );
+        followUpEventPayload = {
+          parentId: lastEntry.id,
+          parentPromptSnippet: lastEntry.prompt.slice(0, 120),
+          confidence: "high",
+          signals: fu.signals,
+        };
+      } else if (fu.confidence === "medium" && lastEntry) {
+        // Don't thread — but surface the suggestion so the UI can offer
+        // a "Continue thread from #<id>?" affordance after-the-fact.
+        followUpEventPayload = {
+          parentId: lastEntry.id,
+          parentPromptSnippet: lastEntry.prompt.slice(0, 120),
+          confidence: "medium",
+          signals: fu.signals,
+        };
+      }
+    } catch (err) {
+      log.warn(
+        `follow-up detection failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
   // Thread context: prepend prior Q+best-answer chain.
-  const parentContext = buildParentContext(body.parentId);
+  const parentContext = buildParentContext(effectiveParentId);
   const promptWithContext = parentContext
     ? `${parentContext}\n\n---\n\n### Current question\n\n${body.prompt}`
     : body.prompt;
@@ -375,6 +424,12 @@ export async function POST(req: Request) {
         soloMode,
         signals: classification.signals,
       });
+
+      // Wave 14 — surface the auto-detected follow-up so the UI can render
+      // a chip and offer an "undo" affordance.
+      if (followUpEventPayload) {
+        send({ type: "follow-up-detected", ...followUpEventPayload });
+      }
 
       // Sub-agents path: when ensembleId is "decompose", plan → mini fan-outs → final synth.
       // Falls back silently to standard fan-out if the planner fails.
