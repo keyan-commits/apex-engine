@@ -3,9 +3,26 @@
 > Updated after every completed task. Read this first to resume work in a new session — it captures volatile state that `CLAUDE.md` doesn't (CLAUDE.md is stable architecture; this is "where are we right now").
 
 **Last updated:** 2026-05-24
-**Last action:** Triage ops trio shipped on top of Wave 11+12: `pnpm feedback:status` (start-of-session snapshot), `pnpm mcp:reload` (force tsx-watch respawn when needed), and **automatic [auto-qa]/[auto-security] issue cleanup** on every passing gate run. The cleanup is gated by the safety contract: only closes auto-prefixed records, only after the corresponding gate currently passes, with audit-trail comment + `auto-closed` label + local `resolvedAt`/`resolvedCommit` patch. 200/200 tests, all gates clean. Three new commits (`815eb59`..`a73c3f8`) pushed.
+**Last action:** Big push — Waves 13a/13b/13c/13d (subject-fidelity, classifier fix for multi-clause prompts, apex_report description hardening, transient-error noise filter), 14 (auto follow-up detection + UI banner), 14a (free-tier hint copy), 14b (`context` parameter on apex_fanout/synthesize/decompose — fixes MCP→meeting-platform drift), 15a (DeepSeek as 5th fan-out provider, env-gated), 16a (apex_history_search MCP tool), plus a critical dev-server fix (qa:check now builds to `.next-qa/` so it stops clobbering the running `pnpm dev`'s `.next/`). 234/234 tests, all gates clean. 13 commits (`08f55d5`..`9ea4b38`) pushed.
 
-**Blocked on:** Nothing. Wave 12c (disagreement-driven re-fan-out) and 12d (Chain-of-Verification lite) still deferred to next wave — they need their own UX design + cross-model validation, not safe to rush in.
+**Blocked on:** Nothing.
+
+## Wave 13–16 — quality + extensibility push (2026-05-24)
+
+| Wave | What | Commit |
+|---|---|---|
+| 13a | Subject-fidelity. Base prompts now say "don't substitute the user's named entity"; synth flags substitutions in a new red `## Off-Topic Answers` callout (parsed by splitDisagreements alongside Confidence + Notable Disagreements). Real failure caught: GPT-4o-mini silently rewrote "iPhone 17 Pro Max" → "iPhone 14 Pro Max". | `08f55d5` |
+| 13b | Classifier fix. Multi-clause recommendation prompts ("So what's the best product for my X to do Y?") no longer trip solo mode. Requires simpleScore≥2 (BOTH brevity AND a simple keyword). Added recommend/best/verify/help-me/which to COMPLEX_KEYWORDS. | `d0820b5` |
+| 13c | apex_report description hardened: "**MANDATORY**" + "**CALL THIS TOOL. Do NOT just verbally note**" after a cross-machine session found a bug but only mentioned it in chat instead of filing it. | `60d1a15` |
+| 13d | Stop auto-emitting bug records for transient upstream errors (429, AbortError, AI_RetryError, ETIMEDOUT, rate-limit-shaped messages). 10 regression tests lock the behavior. | `c3d7ad9` |
+| 14a | Free-tier hint copy. "Rate limit hit. Try again later" → "Gemini free-tier daily quota hit — resets at UTC midnight (no billing required)" when the upstream error mentions free_tier. | `9fa54c9` |
+| 14 | **Auto follow-up detection.** Server-side `detectFollowUp()` checks the most-recent history entry for anaphora / explicit reference / shared named entity. High confidence → auto-set parentId + emit `follow-up-detected` SSE event. Medium → banner only. 30-min stale guard. | `721eab2` |
+| 14b | **`context` parameter on apex_fanout/synthesize/decompose** — fixes the cross-session drift the user hit. Caller supplies a glossary like `"MCP = Model Context Protocol, NOT a meeting platform"`; apex-engine prepends it to every sub-agent's system prompt. Defense-in-depth via `sanitizeContextBlock` that strips directive-shaped lines. | `bd9ac10` |
+| dev-fix | `qa:check` builds to `.next-qa/` instead of clobbering `.next/`. User had to relaunch dev server every code change — gone after this. | `b193baa` |
+| 16a | **apex_history_search MCP tool** — FTS5-backed search of past Q+A. Lets any CC session find prior context across machines. 8th registered tool. | `74b19b6` |
+| 15a | **DeepSeek as 5th fan-out provider.** New "deepseek" slot in PROVIDERS; auto-disabled when DEEPSEEK_API_KEY isn't set so non-users never see error panels. Quality score 3 (peer of GPT-4o-mini); paid-tier rates $0.14 in / $0.28 out. | `9ea4b38` |
+
+234/234 tests pass; pnpm qa:check + security:check + type-check + build clean.
 
 ## Triage ops trio (2026-05-24)
 
