@@ -47,6 +47,16 @@ export type FanOutOptions = {
   // based on this — it's pass-through so B2/B5 can compose without
   // re-classifying.
   classification?: Classification;
+  // Wave 14b — disambiguation context from the CALLING session. A
+  // calling Claude Code session has rich ambient context (project,
+  // glossary, prior turns) that the apex-engine sub-agents don't see.
+  // The caller passes a short block — typically a glossary or
+  // "you're working on <project>; key terms: ..." — and apex-engine
+  // prepends it to every provider's system prompt. Without this, an
+  // apex_decompose call from a Model-Context-Protocol project asking
+  // about "MCP" gets sub-agents that interpret MCP as "meeting
+  // capture platform" instead of "Model Context Protocol".
+  context?: string;
 };
 
 export type StreamUsage = {
@@ -76,8 +86,41 @@ function composeSystemPrompt(base: string, roleSuffix: string | null): string {
   return `${base}\n\n${roleSuffix}`;
 }
 
+// Sanitize + cap the caller-supplied context block. Bounded length so
+// it can't bloat every fan-out prompt; stripped of any apex-engine
+// directive-mimicking lines so a callee can't hijack the system
+// prompt via context injection.
+const CONTEXT_MAX_CHARS = 2000;
+export function sanitizeContextBlock(raw: string | undefined): string | null {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  // Strip lines that look like system-prompt directives. The legitimate
+  // use is glossaries / project descriptions; nothing in apex-engine's
+  // workflow needs a context block to re-define the assistant's role.
+  const cleaned = trimmed
+    .split("\n")
+    .filter(
+      (line) => !/^\s*(?:you are|system:|ignore (?:previous|all)|disregard)/i.test(line),
+    )
+    .join("\n");
+  return cleaned.length > CONTEXT_MAX_CHARS
+    ? `${cleaned.slice(0, CONTEXT_MAX_CHARS - 1)}…`
+    : cleaned;
+}
+
+function composeWithContext(base: string, contextBlock: string | null): string {
+  if (!contextBlock) return base;
+  // Frame the context as a labeled block at the TOP of the system
+  // prompt so providers know it's caller-supplied disambiguation, not
+  // user input.
+  return `[Context from calling session]\n${contextBlock}\n[End context]\n\n${base}`;
+}
+
 export function fanOut(prompt: string, opts: FanOutOptions = {}): FanOutItem[] {
-  const sys = opts.systemPrompt?.trim() || DEFAULT_SYSTEM_PROMPT;
+  const rawSys = opts.systemPrompt?.trim() || DEFAULT_SYSTEM_PROMPT;
+  const contextBlock = sanitizeContextBlock(opts.context);
+  const sys = composeWithContext(rawSys, contextBlock);
   const timeoutMs = opts.timeoutMs ?? DEFAULT_PROVIDER_TIMEOUT_MS;
   const attachments = opts.attachments ?? [];
   const enabled = opts.enabled ?? {};

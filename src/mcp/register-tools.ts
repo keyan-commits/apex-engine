@@ -61,11 +61,12 @@ async function collectStream(item: FanOutItem): Promise<CollectedAnswer> {
 
 async function runFanOut(
   prompt: string,
-  opts: { includeClaude: boolean; ensembleId?: string },
+  opts: { includeClaude: boolean; ensembleId?: string; context?: string },
 ): Promise<CollectedAnswer[]> {
   const ensemble = opts.ensembleId ? findEnsemble(opts.ensembleId) : undefined;
   const items = fanOut(prompt, {
     roles: ensemble?.assignments,
+    context: opts.context,
   });
   const filtered = opts.includeClaude
     ? items
@@ -138,7 +139,7 @@ function withFlushNotice(text: string): string {
 export function registerAllTools(server: McpServer): void {
   server.tool(
     "apex_fanout",
-    "Fan out a prompt to multiple LLMs in parallel and return each model's individual answer. Models: GPT-4o-mini (via GitHub Models), Llama 3.3 70B (via Groq), Gemini 2.5 Flash (via AI Studio). Optionally include Claude via Claude Agent SDK (default off — avoids recursion when invoked from Claude Code, EXCEPT when 2+ of the other providers are quota-exhausted, in which case Claude is auto-included to keep the fan-out useful). Optionally pass an ensembleId to assign roles (code-review / research / decision / brainstorm / legal / medical / marketing). Returns each model's response labeled by provider, separated by --- . Use when you want to compare how different LLMs answer the same question — cross-checking facts, diverse perspectives, research.",
+    "Fan out a prompt to multiple LLMs in parallel and return each model's individual answer. Models: GPT-4o-mini (via GitHub Models), Llama 3.3 70B (via Groq), Gemini 2.5 Flash (via AI Studio). Optionally include Claude via Claude Agent SDK (default off — avoids recursion when invoked from Claude Code, EXCEPT when 2+ of the other providers are quota-exhausted, in which case Claude is auto-included to keep the fan-out useful). Optionally pass an ensembleId to assign roles (code-review / research / decision / brainstorm / legal / medical / marketing). Returns each model's response labeled by provider, separated by --- . Use when you want to compare how different LLMs answer the same question — cross-checking facts, diverse perspectives, research.\n\n**STRONGLY RECOMMENDED: pass `context`** whenever the prompt contains acronyms / project names / domain-specific terms that an outside model might misinterpret. Real failure caught: a call from a project using \"MCP\" (Model Context Protocol) produced sub-agents that interpreted MCP as a generic enterprise meeting-capture platform. The fix is one sentence of context.",
     {
       prompt: z.string().describe("The question to ask all models."),
       includeClaude: z
@@ -153,8 +154,14 @@ export function registerAllTools(server: McpServer): void {
         .describe(
           "Optional ensemble id (code-review / research / decision / brainstorm / legal / medical / marketing). Assigns each model a distinct role.",
         ),
+      context: z
+        .string()
+        .optional()
+        .describe(
+          "Disambiguation context from YOUR (caller's) session — a short glossary or project description that apex-engine prepends to each sub-agent's system prompt. Use it whenever the prompt contains acronyms, project names, version numbers, or domain-specific terms an outside model might misinterpret. Example: \"transcribe-meeting is an MCP server. MCP = Model Context Protocol (Anthropic's protocol for LLM tool calls), NOT a meeting platform. v0.3.0 was released last week.\" Capped at 2000 chars; lines that look like system-prompt directives are stripped.",
+        ),
     },
-    async ({ prompt, includeClaude, ensembleId }) => {
+    async ({ prompt, includeClaude, ensembleId, context }) => {
       // Wave 11 recursion-guard adjustment: when 2+ non-Claude providers
       // are exhausted, ignore the default-off behavior and bring Claude
       // into the fan-out anyway. Without this the user gets a fan-out
@@ -164,6 +171,7 @@ export function registerAllTools(server: McpServer): void {
       const answers = await runFanOut(prompt, {
         includeClaude: effectiveIncludeClaude,
         ensembleId,
+        context,
       });
       try {
         saveHistory({
@@ -184,7 +192,7 @@ export function registerAllTools(server: McpServer): void {
 
   server.tool(
     "apex_synthesize",
-    "Fan out a prompt to multiple LLMs and produce a single synthesized 'best answer' (Mixture-of-Agents pattern). Queries GPT / Llama / Gemini (and optionally Claude) in parallel, then sends all responses + original prompt to a synthesizer model (DeepSeek-R1-Distill 70B via Groq by default) which combines the strongest insights, resolves contradictions, and produces one polished answer. Returns the synthesized answer followed by each individual response for transparency. Use when you want the highest-quality consolidated answer from multiple models.",
+    "Fan out a prompt to multiple LLMs and produce a single synthesized 'best answer' (Mixture-of-Agents pattern). Queries GPT / Llama / Gemini (and optionally Claude) in parallel, then sends all responses + original prompt to a synthesizer model (DeepSeek-R1-Distill 70B via Groq by default) which combines the strongest insights, resolves contradictions, and produces one polished answer. Returns the synthesized answer followed by each individual response for transparency. Use when you want the highest-quality consolidated answer from multiple models.\n\n**STRONGLY RECOMMENDED: pass `context`** whenever the prompt contains acronyms / project names / domain-specific terms. Same rationale as apex_fanout — outside models drift without it.",
     {
       prompt: z.string().describe("The question to ask all models."),
       includeClaude: z
@@ -199,9 +207,15 @@ export function registerAllTools(server: McpServer): void {
         .describe(
           "Synthesizer model id. Options: deepseek-r1-distill (default), claude-sonnet, gpt-4o-mini, gemini-flash. See src/lib/synthesizer-options.ts.",
         ),
+      context: z
+        .string()
+        .optional()
+        .describe(
+          "Disambiguation context from your session — see apex_fanout's context param for guidance.",
+        ),
     },
-    async ({ prompt, includeClaude, synthesizerId }) => {
-      const answers = await runFanOut(prompt, { includeClaude });
+    async ({ prompt, includeClaude, synthesizerId, context }) => {
+      const answers = await runFanOut(prompt, { includeClaude, context });
       const synthInput: FanOutAnswer[] = answers.map((a) => ({
         provider: a.provider,
         text: a.text,
@@ -212,8 +226,15 @@ export function registerAllTools(server: McpServer): void {
       let synthText = "";
       let synthError: string | null = null;
       try {
+        // Compose caller-supplied context into the synth's systemPrompt
+        // so the synthesizer sees the same disambiguation block the
+        // base fan-out received.
+        const synthSystemPrompt = context && context.trim()
+          ? `[Context from calling session]\n${context.trim()}\n[End context]`
+          : undefined;
         for await (const chunk of synthesize(prompt, synthInput, {
           synthesizerId,
+          ...(synthSystemPrompt ? { systemPrompt: synthSystemPrompt } : {}),
         })) {
           synthText += chunk;
         }
@@ -254,12 +275,18 @@ export function registerAllTools(server: McpServer): void {
 
   server.tool(
     "apex_decompose",
-    "Decompose a complex prompt into ≤3 sub-questions, answer each via a mini fan-out (gpt-4o-mini + Llama 3.3 70B + a mini-synth via gpt-oss-120b), then return a structured tree of sub-questions and their answers. Best for multi-part questions where pure parallel fan-out would lose structure.",
+    "Decompose a complex prompt into ≤3 sub-questions, answer each via a mini fan-out (gpt-4o-mini + Llama 3.3 70B + a mini-synth via gpt-oss-120b), then return a structured tree of sub-questions and their answers. Best for multi-part questions where pure parallel fan-out would lose structure.\n\n**STRONGLY RECOMMENDED: pass `context`** whenever the prompt has acronyms or project-specific terms. apex_decompose is THE highest-risk tool for context drift — the planner generates sub-questions that are FURTHER from the original prompt, and each sub-question goes to its own mini fan-out. A real failure: a call from a transcribe-meeting/MCP project produced sub-questions about \"enterprise meeting capture platform\" because the planner had no glossary saying MCP = Model Context Protocol. One sentence of context prevents this.",
     {
       prompt: z.string().describe("The complex prompt to decompose."),
+      context: z
+        .string()
+        .optional()
+        .describe(
+          "Disambiguation context from YOUR (caller's) session — fed to BOTH the planner AND each mini fan-out. Even more important here than in apex_fanout/synthesize because sub-questions land further from the original. Example: \"transcribe-meeting is an MCP server. MCP = Model Context Protocol (Anthropic, NOT a meeting platform). Current version 0.3.0 adds Whisper integration.\" Capped at 2000 chars.",
+        ),
     },
-    async ({ prompt }) => {
-      const plan = await decompose(prompt);
+    async ({ prompt, context }) => {
+      const plan = await decompose(prompt, undefined, context);
       if (!plan.ok) {
         return {
           content: [
@@ -267,7 +294,7 @@ export function registerAllTools(server: McpServer): void {
           ],
         };
       }
-      await executeSubagents(plan.nodes, () => {});
+      await executeSubagents(plan.nodes, () => {}, undefined, context);
       const briefing = nodesToBriefing(plan.nodes);
       return {
         content: [{ type: "text", text: withFlushNotice(briefing) }],

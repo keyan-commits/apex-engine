@@ -45,13 +45,22 @@ export type DecomposeResult =
 export async function decompose(
   prompt: string,
   signal?: AbortSignal,
+  context?: string,
 ): Promise<DecomposeResult> {
+  // Wave 14b: when the caller supplies disambiguation context, prepend
+  // it to the planner prompt so sub-questions land in the right domain.
+  // Without this, "what features should we add to transcribe-meeting
+  // v0.3.0 (which uses MCP)?" generates sub-questions about "MCP =
+  // meeting capture platform" instead of "Model Context Protocol".
+  const contextBlock = context && context.trim()
+    ? `[Context from calling session]\n${context.trim()}\n[End context]\n\n`
+    : "";
   try {
     const { object } = await generateObject({
       model: groq("openai/gpt-oss-120b"),
       schema: planSchema,
       abortSignal: signal,
-      prompt: `Decompose the following user request into AT MOST ${MAX_SUBQUESTIONS} self-contained sub-questions whose answers, taken together, would let a synthesizer produce the best final answer.
+      prompt: `${contextBlock}Decompose the following user request into AT MOST ${MAX_SUBQUESTIONS} self-contained sub-questions whose answers, taken together, would let a synthesizer produce the best final answer.
 
 Rules:
 - ALWAYS include the depends_on field on every sub-question — emit [] (empty array) when the sub-question is independent. NEVER omit the field.
@@ -59,6 +68,7 @@ Rules:
 - Use small integer ids starting at 1.
 - depends_on must reference smaller ids only — never your own id, never a forward reference, no cycles.
 - If the prompt is already a single tight question, return exactly one sub-question equal to the prompt.
+- Sub-questions MUST respect the disambiguation in the context block above (when present). NEVER substitute alternative meanings for project-specific terms.
 
 User request:
 
@@ -127,10 +137,18 @@ async function runMiniFanout(
   question: string,
   contextBlocks: string,
   signal?: AbortSignal,
+  callerContext?: string,
 ): Promise<string> {
+  // Caller-supplied disambiguation block (project glossary, term
+  // definitions, etc.) sits ABOVE the dependency context so the mini-
+  // fanout models see it before parsing the question.
+  const callerBlock =
+    callerContext && callerContext.trim()
+      ? `[Context from calling session]\n${callerContext.trim()}\n[End context]\n\n`
+      : "";
   const promptWithContext = contextBlocks
-    ? `${contextBlocks}\n\n---\n\n### Question\n\n${question}`
-    : question;
+    ? `${callerBlock}${contextBlocks}\n\n---\n\n### Question\n\n${question}`
+    : `${callerBlock}${question}`;
   const calls = await Promise.allSettled([
     generateText({
       model: githubModels("openai/gpt-4o-mini"),
@@ -180,6 +198,7 @@ export async function executeSubagents(
   nodes: SubagentNode[],
   onProgress: SubagentProgress,
   signal?: AbortSignal,
+  callerContext?: string,
 ): Promise<void> {
   // Group by level (max-depth of dependencies).
   const levels = new Map<number, SubagentNode[]>();
@@ -228,7 +247,7 @@ export async function executeSubagents(
           .filter(Boolean)
           .join("\n\n");
         try {
-          n.answer = await runMiniFanout(n.text, ctx, signal);
+          n.answer = await runMiniFanout(n.text, ctx, signal, callerContext);
           n.status = "done";
         } catch (err) {
           n.status = "error";
