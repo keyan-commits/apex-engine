@@ -99,6 +99,7 @@ function initialState(): State {
       openai: initialPanel(),
       llama: initialPanel(),
       gemini: initialPanel(),
+      deepseek: initialPanel(),
     },
     synth: { status: "idle", text: "", error: null, latencyMs: null },
     subagentNodes: null,
@@ -204,6 +205,9 @@ function reducer(state: State, action: Action): State {
           openai: answerToPanel(e.answers.openai),
           llama: answerToPanel(e.answers.llama),
           gemini: answerToPanel(e.answers.gemini),
+          deepseek: e.answers.deepseek
+            ? answerToPanel(e.answers.deepseek)
+            : initialPanel(),
         },
         synth: {
           status: e.synthError ? "error" : e.synthText ? "done" : "idle",
@@ -404,6 +408,7 @@ export default function Home() {
       openai: true,
       llama: true,
       gemini: true,
+      deepseek: true,
     };
     if (typeof window === "undefined") return defaults;
     const stored = window.localStorage.getItem(ENABLED_PROVIDERS_KEY);

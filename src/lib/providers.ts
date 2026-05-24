@@ -1,10 +1,11 @@
-export type Provider = "claude" | "openai" | "llama" | "gemini";
+export type Provider = "claude" | "openai" | "llama" | "gemini" | "deepseek";
 
 export const PROVIDERS: readonly Provider[] = [
   "claude",
   "openai",
   "llama",
   "gemini",
+  "deepseek",
 ] as const;
 
 export type Tier = "primary" | "fallback";
@@ -26,6 +27,14 @@ export const MODELS: Record<Provider, Record<Tier, string>> = {
     primary: "gemini-2.5-flash",
     fallback: "gemini-2.0-flash",
   },
+  deepseek: {
+    // Wave 15a: DeepSeek as a 5th slot. Text-only (no multimodal).
+    // Strong reasoning style — fills a gap the existing 4 don't.
+    // Auto-disabled at runtime when DEEPSEEK_API_KEY is missing (see
+    // engine.ts), so users without a key never see an error panel.
+    primary: "deepseek-chat",
+    fallback: "deepseek-chat",
+  },
 };
 
 export const PROVIDER_LABELS: Record<Provider, string> = {
@@ -33,6 +42,7 @@ export const PROVIDER_LABELS: Record<Provider, string> = {
   openai: "GPT",
   llama: "Llama",
   gemini: "Gemini",
+  deepseek: "DeepSeek",
 };
 
 // Wave 11: static quality score per provider, used by the degradation-
@@ -50,6 +60,7 @@ export const QUALITY_SCORE: Record<Provider, number> = {
   openai: 3,
   llama: 2,
   gemini: 2,
+  deepseek: 3, // reasoning-strong; on par with GPT-4o-mini for fallback purposes
 };
 
 export function highestQualityAmong(providers: Provider[]): Provider | null {

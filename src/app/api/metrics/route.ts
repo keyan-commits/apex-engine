@@ -20,6 +20,7 @@ export async function GET() {
     openai: { latencies: [], ok: 0, err: 0 },
     llama: { latencies: [], ok: 0, err: 0 },
     gemini: { latencies: [], ok: 0, err: 0 },
+    deepseek: { latencies: [], ok: 0, err: 0 },
   };
 
   try {

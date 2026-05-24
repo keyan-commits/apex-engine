@@ -1,5 +1,6 @@
 import { generateText, streamText } from "ai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import { deepseek } from "@ai-sdk/deepseek";
 import { google } from "@ai-sdk/google";
 import { groq } from "@ai-sdk/groq";
 import { query } from "@anthropic-ai/claude-agent-sdk";
@@ -124,7 +125,17 @@ export function fanOut(prompt: string, opts: FanOutOptions = {}): FanOutItem[] {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_PROVIDER_TIMEOUT_MS;
   const attachments = opts.attachments ?? [];
   const enabled = opts.enabled ?? {};
-  const activeProviders = PROVIDERS.filter((p) => enabled[p] !== false);
+  // Wave 15a — auto-disable providers whose API key isn't in the env.
+  // Without this guard the fan-out would call deepseek (or any future
+  // key-gated provider) and surface an "API key missing" error panel
+  // for every request, which is noise for users who chose not to set
+  // up that provider. We still respect explicit user-disable via the
+  // Settings toggle.
+  const activeProviders = PROVIDERS.filter((p) => {
+    if (enabled[p] === false) return false;
+    if (p === "deepseek" && !process.env.DEEPSEEK_API_KEY) return false;
+    return true;
+  });
 
   // Shared cache of image descriptions; lazily populated by streamFor when
   // a text-only provider needs them. Multiple streamFor calls may await the
@@ -233,7 +244,9 @@ function streamFor(
         // Claude Agent SDK doesn't surface input/output token counts in a
         // standardized way; leave usage null.
         resolveUsage(null);
-      } else if (provider === "llama") {
+      } else if (provider === "llama" || provider === "deepseek") {
+        // Text-only providers: build per-image describe-pass via
+        // gpt-4o-mini, then stream from the provider's chat API.
         const descriptions = new Map<string, string>();
         if (resolved.length > 0) {
           for (const r of resolved) {
@@ -246,7 +259,9 @@ function streamFor(
           }
         }
         const textPrompt = buildTextOnlyPrompt(prompt, resolved, descriptions);
-        const u = yield* streamGroqText(model, textPrompt, systemPrompt, signal);
+        const u = yield* (provider === "llama"
+          ? streamGroqText(model, textPrompt, systemPrompt, signal)
+          : streamDeepseekText(model, textPrompt, systemPrompt, signal));
         resolveUsage(u);
       } else {
         const u = yield* streamMultimodal(
@@ -311,7 +326,7 @@ async function* streamClaude(
 }
 
 async function* streamMultimodal(
-  provider: Exclude<Provider, "claude" | "llama">,
+  provider: Exclude<Provider, "claude" | "llama" | "deepseek">,
   model: string,
   prompt: string,
   systemPrompt: string,
@@ -352,6 +367,34 @@ async function* streamGroqText(
   let captured: Error | null = null;
   const result = streamText({
     model: groq(model),
+    system: systemPrompt,
+    prompt,
+    abortSignal: signal,
+    onError({ error }) {
+      captured = error instanceof Error ? error : new Error(String(error));
+    },
+  });
+  for await (const chunk of result.textStream) {
+    if (signal.aborted) throw signalToError(signal);
+    yield chunk;
+  }
+  if (captured) throw captured;
+  return await drainUsage(result);
+}
+
+// Wave 15a — DeepSeek text-only streaming. Same shape as streamGroqText
+// but routes through the @ai-sdk/deepseek provider. DeepSeek doesn't
+// support multimodal inputs, so the call site handles image attachments
+// via the describe-pass (gpt-4o-mini) just like the Llama path.
+async function* streamDeepseekText(
+  model: string,
+  prompt: string,
+  systemPrompt: string,
+  signal: AbortSignal,
+): AsyncGenerator<string, StreamUsage | null, undefined> {
+  let captured: Error | null = null;
+  const result = streamText({
+    model: deepseek(model),
     system: systemPrompt,
     prompt,
     abortSignal: signal,

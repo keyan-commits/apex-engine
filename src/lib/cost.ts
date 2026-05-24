@@ -26,6 +26,9 @@ export const RATES_BY_MODEL: Record<string, Rate> = {
   // Google AI Studio paid-tier list prices.
   "gemini-2.5-flash": { inputPer1M: 0.075, outputPer1M: 0.3 },
   "gemini-2.0-flash": { inputPer1M: 0.075, outputPer1M: 0.3 },
+  // DeepSeek paid-tier list prices (post-cache, deepseek-chat tier).
+  "deepseek-chat": { inputPer1M: 0.14, outputPer1M: 0.28 },
+  "deepseek-reasoner": { inputPer1M: 0.55, outputPer1M: 2.19 },
 };
 
 export function rateFor(model: string): Rate {

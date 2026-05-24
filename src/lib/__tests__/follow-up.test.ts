@@ -20,6 +20,7 @@ function makeParent(overrides: Partial<HistoryEntry> = {}): HistoryEntry {
       openai: { text: "", model: "", tier: "primary", error: "skipped" },
       llama: { text: "", model: "", tier: "primary", error: "skipped" },
       gemini: { text: "", model: "", tier: "primary", error: "skipped" },
+      deepseek: { text: "", model: "", tier: "primary", error: "skipped" },
     },
     synthText:
       "A typical universal clip-on microscope lens will work with the iPhone 17 Pro Max, provided you pay attention to fit and alignment.",
