@@ -6,6 +6,7 @@ import { createReport } from "@/lib/feedback";
 import { saveHistory, type HistoryAnswer } from "@/lib/history";
 import { PROVIDERS, PROVIDER_LABELS, type Provider } from "@/lib/providers";
 import { findEnsemble } from "@/lib/roles";
+import { formatSelfCheckReport, selfCheck } from "@/lib/self-check";
 import {
   decompose,
   executeSubagents,
@@ -286,6 +287,29 @@ server.tool(
         ],
       };
     }
+  },
+);
+
+// Names of every tool we register on this MCP server. Used by
+// apex_self_check to surface the loaded tool list — and by future
+// drift logic (e.g. comparing the running list to what's in HEAD).
+const REGISTERED_TOOL_NAMES = [
+  "apex_fanout",
+  "apex_synthesize",
+  "apex_decompose",
+  "apex_report",
+  "apex_self_check",
+];
+
+server.tool(
+  "apex_self_check",
+  "Report whether this MCP server is running the latest apex-engine code. Captures git HEAD at server startup and compares to the current HEAD on disk. Use this when you suspect a recently-added tool or bug fix isn't being picked up — the answer tells you whether a Claude Code restart is required. Always safe and free to call.",
+  {},
+  async () => {
+    const result = selfCheck(REGISTERED_TOOL_NAMES);
+    return {
+      content: [{ type: "text", text: formatSelfCheckReport(result) }],
+    };
   },
 );
 
