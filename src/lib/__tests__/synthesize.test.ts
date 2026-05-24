@@ -89,4 +89,12 @@ Secondary paragraph.
     expect(r.body).toBe("Body.");
     expect(r.disagreements).toBeNull();
   });
+
+  it("detects the heading even at the very start of the text (no leading newline)", () => {
+    const r = splitDisagreements(
+      "## Notable Disagreements\n\n- Topic A: split decision.",
+    );
+    expect(r.body).toBe("");
+    expect(r.disagreements).toBe("- Topic A: split decision.");
+  });
 });

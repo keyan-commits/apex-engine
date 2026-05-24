@@ -8,7 +8,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { hostname, platform } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 // Cross-instance feedback channel. Each apex-engine instance (UI, MCP,
 // API, CLI) creates structured report records on its local disk. A flush
@@ -24,7 +25,18 @@ import { join } from "node:path";
 // breaking old records. The id is timestamp-prefixed so the directory
 // sorts chronologically.
 
-const DATA_DIR = join(process.cwd(), "data");
+// Resolve the apex-engine repo root from THIS source file, not from
+// process.cwd(). The MCP server's launcher (`bin/apex-engine-mcp`) cd's
+// into the repo, but other entry points (direct `tsx src/mcp/server.ts`,
+// Next.js dev server, future CLI tools) may not — using cwd would silently
+// route reports into the caller's working directory and defeat the
+// cross-instance convergence goal.
+//
+// At ESM runtime: this file lives at <repo>/src/lib/feedback.ts, so two
+// dirname() hops lands on the repo root. Next.js' build output also keeps
+// the relative depth, so the same calculation holds at runtime.
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const DATA_DIR = join(REPO_ROOT, "data");
 const OUTBOX = join(DATA_DIR, "feedback", "outbox");
 const SENT = join(DATA_DIR, "feedback", "sent");
 
@@ -69,7 +81,7 @@ function gitCommit(): string | null {
   if (cachedGitCommit !== undefined) return cachedGitCommit;
   try {
     const out = execFileSync("git", ["rev-parse", "--short", "HEAD"], {
-      cwd: process.cwd(),
+      cwd: REPO_ROOT,
       stdio: ["ignore", "pipe", "ignore"],
       encoding: "utf8",
     }).trim();
@@ -82,7 +94,7 @@ function gitCommit(): string | null {
 
 function apexVersion(): string {
   try {
-    const pkgPath = join(process.cwd(), "package.json");
+    const pkgPath = join(REPO_ROOT, "package.json");
     if (!existsSync(pkgPath)) return "unknown";
     const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as {
       version?: string;

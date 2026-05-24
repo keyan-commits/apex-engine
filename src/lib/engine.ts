@@ -58,6 +58,11 @@ export type FanOutItem = {
   // Resolves after the stream completes (or errors). null when the provider
   // doesn't expose token counts (Claude Agent SDK) or when the stream fails
   // before usage is reported.
+  //
+  // CONTRACT: callers MUST iterate `stream` to completion (or until it
+  // throws) before awaiting `usage` — the underlying Promise is only
+  // resolved inside the stream generator. Awaiting `usage` without ever
+  // iterating the stream will hang forever.
   usage: Promise<StreamUsage | null>;
 };
 
