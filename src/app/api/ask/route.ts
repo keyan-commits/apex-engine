@@ -53,6 +53,10 @@ type ParsedBody = {
   // Sonnet whenever 2+ non-Claude providers are exhausted AND Claude
   // is available AND Eco mode is off. Settings UI exposes a toggle.
   favorClaudeWhenDegraded: boolean;
+  // Wave 12b: when true, run a critique→revise pass on the synth output.
+  // Adds ~2× latency on the synth step. Default false; opt-in via the
+  // Settings UI.
+  selfRefine: boolean;
 };
 
 async function parseRequest(req: Request): Promise<{ ok: true; body: ParsedBody } | { ok: false; error: string }> {
@@ -112,6 +116,7 @@ async function parseRequest(req: Request): Promise<{ ok: true; body: ParsedBody 
         styleId: json("styleId") ?? undefined,
         forceFullFanout: json("forceFullFanout") === "true",
         favorClaudeWhenDegraded: json("favorClaudeWhenDegraded") !== "false",
+        selfRefine: json("selfRefine") === "true",
       },
     };
   }
@@ -141,6 +146,7 @@ async function parseRequest(req: Request): Promise<{ ok: true; body: ParsedBody 
         typeof body.favorClaudeWhenDegraded === "boolean"
           ? body.favorClaudeWhenDegraded
           : true,
+      selfRefine: body.selfRefine === true,
     },
   };
 }
@@ -622,6 +628,15 @@ export async function POST(req: Request) {
                 synthesizerId: effectiveSynthesizerId,
                 signal,
                 styleId: body.styleId,
+                selfRefine: body.selfRefine,
+                onRefineStart: () => {
+                  // Tells the UI to switch the badge from "synthesizing" to
+                  // "refining" so the user understands the extra latency.
+                  send({
+                    type: "warning",
+                    message: "Self-Refine: revising the draft after critique…",
+                  });
+                },
                 onUsage: (u) => {
                   synthUsageRef.current = u;
                 },

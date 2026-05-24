@@ -32,6 +32,15 @@ export type SynthesizeOptions = {
   // prompt. Default true so the synth never blows its context window
   // when 4 verbose base answers arrive. Override only for tests.
   compressInputs?: boolean;
+  // Wave 12b: if true, after the initial draft completes, run a single
+  // critique→revise pass on the same synth model. Adds ~2× latency on
+  // the synth step. Default false — caller (route.ts) opts in based on
+  // a UI toggle.
+  selfRefine?: boolean;
+  // Called when the draft phase completes, before the refine phase
+  // starts. Lets the caller flag a UI transition (e.g. show "refining…"
+  // instead of "synthesizing…"). Only invoked when selfRefine is true.
+  onRefineStart?: () => void;
 };
 
 const githubModels = createOpenAICompatible({
@@ -64,12 +73,131 @@ export async function* synthesize(
       : compressAnswersForSynth(valid, config);
   const synthPrompt = buildSynthPrompt(prompt, compressed, style.suffix);
 
+  // Wave 12b Self-Refine path. When opts.selfRefine is on, we run the
+  // initial draft (streaming nothing visible to the user — captured
+  // into a buffer), then a critique pass (same — captured), then a
+  // revise pass which is the user-visible synth output. This gives the
+  // user a single, refined answer rather than three separate streams.
+  // Adds ~2× latency on the synth step.
+  if (opts.selfRefine) {
+    yield* selfRefinePipeline(prompt, compressed, style.suffix, config, opts);
+    return;
+  }
+
   if (config.provider === "anthropic-agent") {
     yield* synthClaudeAgent(synthPrompt, config.model, opts);
     return;
   }
 
   yield* stripThinkTags(synthViaAiSdk(synthPrompt, config, opts));
+}
+
+// Self-Refine pipeline (Wave 12b). Three phases:
+//   1. DRAFT — same as the non-refine path, but captured into a buffer
+//      (no tokens streamed to the user yet).
+//   2. CRITIQUE — second call asks the same model to identify
+//      weaknesses, factual issues, missing perspectives in the draft.
+//   3. REVISE — third call asks the model to rewrite the draft taking
+//      the critique into account. ONLY this output is streamed to the
+//      user.
+//
+// Why hide phases 1 + 2: streaming three separate phases would confuse
+// the UX (the user sees a draft, then a critique, then a final). The
+// final revised answer alone is what they want. Total latency is ~2×
+// a single synth — measurable but acceptable for an opt-in feature.
+async function* selfRefinePipeline(
+  prompt: string,
+  compressedAnswers: FanOutAnswer[],
+  styleSuffix: string,
+  config: SynthesizerOption,
+  opts: SynthesizeOptions,
+): AsyncGenerator<string> {
+  const draftPrompt = buildSynthPrompt(prompt, compressedAnswers, styleSuffix);
+  const draft = await collectFully(draftPrompt, config, opts);
+  if (opts.signal?.aborted) throwAbort(opts.signal);
+
+  const critiquePrompt = buildCritiquePrompt(prompt, draft);
+  const critique = await collectFully(critiquePrompt, config, opts);
+  if (opts.signal?.aborted) throwAbort(opts.signal);
+
+  opts.onRefineStart?.();
+  const revisePrompt = buildRevisePrompt(prompt, draft, critique, styleSuffix);
+
+  if (config.provider === "anthropic-agent") {
+    yield* synthClaudeAgent(revisePrompt, config.model, opts);
+    return;
+  }
+  yield* stripThinkTags(synthViaAiSdk(revisePrompt, config, opts));
+}
+
+async function collectFully(
+  promptText: string,
+  config: SynthesizerOption,
+  opts: SynthesizeOptions,
+): Promise<string> {
+  // Don't fire opts.onUsage during the draft/critique phases — usage
+  // accounting should reflect the FINAL revise call so the user-visible
+  // cost matches the user-visible answer length. Phases 1 + 2 are an
+  // internal expense that we eat.
+  const innerOpts: SynthesizeOptions = { ...opts, onUsage: undefined };
+  let out = "";
+  if (config.provider === "anthropic-agent") {
+    for await (const chunk of synthClaudeAgent(promptText, config.model, innerOpts)) {
+      out += chunk;
+    }
+  } else {
+    for await (const chunk of stripThinkTags(
+      synthViaAiSdk(promptText, config, innerOpts),
+    )) {
+      out += chunk;
+    }
+  }
+  return out;
+}
+
+export function buildCritiquePrompt(prompt: string, draft: string): string {
+  return `You are reviewing a draft answer for quality, before it ships to the user. The user's original question is reproduced below, followed by the draft. Critique the draft in 5 short bullets MAX, focused on:
+- Factual claims that look wrong or uncertain
+- Missing perspectives or important caveats the user would want
+- Internal contradictions or logical gaps
+- Unjustified hedging OR unjustified confidence
+- Anything that would be embarrassing if a domain expert read it
+
+Do NOT rewrite the draft. Do NOT add new facts. Just list the issues. Be terse.
+
+## Original question
+
+${prompt}
+
+## Draft answer to critique
+
+${draft}
+
+## Issues`;
+}
+
+export function buildRevisePrompt(
+  prompt: string,
+  draft: string,
+  critique: string,
+  styleSuffix: string,
+): string {
+  const stylePreamble = styleSuffix ? `\n\n${styleSuffix}` : "";
+  return `You wrote a draft answer to the user's question and then reviewed it. Now rewrite the answer addressing every issue in the critique. Preserve the structure (Notable Disagreements section if present, Confidence section, etc.). Do NOT mention the critique or that this is a revision — the user only sees this final version.${stylePreamble}
+
+## Original question
+
+${prompt}
+
+## Your previous draft
+
+${draft}
+
+## Issues to fix
+
+${critique}
+
+## Your revised final answer`;
 }
 
 async function* synthClaudeAgent(

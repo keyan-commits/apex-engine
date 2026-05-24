@@ -41,6 +41,7 @@ const ENSEMBLE_ID_KEY = "apex.ensemble-id";
 const ECO_MODE_KEY = "apex.eco-mode";
 const ENABLED_PROVIDERS_KEY = "apex.enabled-providers";
 const FAVOR_CLAUDE_KEY = "apex.favor-claude-when-degraded";
+const SELF_REFINE_KEY = "apex.self-refine";
 const COMPACT_MODE_KEY = "apex.compact-mode";
 
 export type SubagentDisplayNode = {
@@ -379,6 +380,12 @@ export default function Home() {
     const stored = window.localStorage.getItem(FAVOR_CLAUDE_KEY);
     return stored == null ? true : stored === "true";
   });
+  // Wave 12b: opt-in critique→revise pass on the synth. Default off
+  // because it ~2× the synth latency.
+  const [selfRefine, setSelfRefine] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem(SELF_REFINE_KEY) === "true";
+  });
   const [enabledProviders, setEnabledProviders] = useState<Record<Provider, boolean>>(() => {
     const defaults: Record<Provider, boolean> = {
       claude: true,
@@ -433,6 +440,10 @@ export default function Home() {
   useEffect(() => {
     window.localStorage.setItem(FAVOR_CLAUDE_KEY, String(favorClaude));
   }, [favorClaude]);
+
+  useEffect(() => {
+    window.localStorage.setItem(SELF_REFINE_KEY, String(selfRefine));
+  }, [selfRefine]);
 
   useEffect(() => {
     window.localStorage.setItem(
@@ -530,6 +541,7 @@ export default function Home() {
         fd.set("enabled", JSON.stringify(enabledProviders));
         fd.set("ecoMode", String(ecoMode));
         fd.set("favorClaudeWhenDegraded", String(favorClaude));
+        fd.set("selfRefine", String(selfRefine));
         fd.set("styleId", synthStyleId);
         if (opts.forceFullFanout) fd.set("forceFullFanout", "true");
         for (const f of files) fd.append("attachments", f, f.name);
@@ -546,6 +558,7 @@ export default function Home() {
           enabled: enabledProviders,
           ecoMode,
           favorClaudeWhenDegraded: favorClaude,
+          selfRefine,
           styleId: synthStyleId,
           forceFullFanout: opts.forceFullFanout === true,
         });
@@ -826,6 +839,8 @@ export default function Home() {
         onChangeEcoMode={setEcoMode}
         favorClaudeWhenDegraded={favorClaude}
         onChangeFavorClaude={setFavorClaude}
+        selfRefine={selfRefine}
+        onChangeSelfRefine={setSelfRefine}
         enabledProviders={enabledProviders}
         onToggleProvider={(p, enabled) =>
           setEnabledProviders((prev) => ({ ...prev, [p]: enabled }))

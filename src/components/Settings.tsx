@@ -25,6 +25,8 @@ export function Settings({
   onChangeEcoMode,
   favorClaudeWhenDegraded,
   onChangeFavorClaude,
+  selfRefine,
+  onChangeSelfRefine,
   enabledProviders,
   onToggleProvider,
   synthStyleId,
@@ -38,6 +40,8 @@ export function Settings({
   onChangeEcoMode: (eco: boolean) => void;
   favorClaudeWhenDegraded: boolean;
   onChangeFavorClaude: (favor: boolean) => void;
+  selfRefine: boolean;
+  onChangeSelfRefine: (refine: boolean) => void;
   enabledProviders: Record<Provider, boolean>;
   onToggleProvider: (p: Provider, enabled: boolean) => void;
   synthStyleId: SynthStyleId;
@@ -186,6 +190,39 @@ export function Settings({
                 claude-sonnet-4-6
               </code>
               . Uses your Claude Code subscription. Disabled in Eco mode.
+            </p>
+          </div>
+
+          <div className="border-t border-neutral-200 dark:border-neutral-800 pt-4">
+            <label className="text-[10px] uppercase tracking-wide text-neutral-500 block mb-2">
+              Self-Refine the synth
+            </label>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={selfRefine}
+              onClick={() => onChangeSelfRefine(!selfRefine)}
+              className="flex items-center gap-2 w-full text-left"
+            >
+              <span
+                className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition ${
+                  selfRefine
+                    ? "bg-purple-500"
+                    : "bg-neutral-300 dark:bg-neutral-700"
+                }`}
+              >
+                <span
+                  className={`inline-block h-3 w-3 rounded-full bg-white transition-transform ${
+                    selfRefine ? "translate-x-5" : "translate-x-1"
+                  }`}
+                />
+              </span>
+              <span className="text-sm">{selfRefine ? "On" : "Off"}</span>
+            </button>
+            <p className="text-[11px] text-neutral-500 mt-1.5 leading-relaxed">
+              After the initial synth draft, run a critique→revise pass on the
+              same model. Higher quality but ~2× synth latency. Use for
+              important answers; leave off for quick lookups.
             </p>
           </div>
 
