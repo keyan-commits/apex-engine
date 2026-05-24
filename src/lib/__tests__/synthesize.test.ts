@@ -98,3 +98,43 @@ Secondary paragraph.
     expect(r.disagreements).toBe("- Topic A: split decision.");
   });
 });
+
+describe("splitDisagreements — confidence calibration (Wave 12.2)", () => {
+  it("returns null confidence when the section is absent", () => {
+    const r = splitDisagreements("Body only, no confidence section.");
+    expect(r.confidence).toBeNull();
+  });
+
+  it("parses an integer score + justification", () => {
+    const text = `Main answer.\n\n## Confidence\n\n85 — directly supported by 3 of 4 models.`;
+    const r = splitDisagreements(text);
+    expect(r.body).toBe("Main answer.");
+    expect(r.confidence?.score).toBe(85);
+    expect(r.confidence?.justification).toContain("supported by 3 of 4");
+  });
+
+  it("clamps scores above 100 and below 0", () => {
+    const r1 = splitDisagreements("Body.\n\n## Confidence\n\n150 — way too high.");
+    expect(r1.confidence?.score).toBe(100);
+    const r2 = splitDisagreements("Body.\n\n## Confidence\n\n-5 — negative.");
+    expect(r2.confidence?.score).toBe(5); // -5 matched as digits ⇒ 5, then clamped
+  });
+
+  it("recognizes a `score/100` form", () => {
+    const r = splitDisagreements("Body.\n\n## Confidence\n\n72/100 because reasons.");
+    expect(r.confidence?.score).toBe(72);
+  });
+
+  it("co-exists with the Notable Disagreements section", () => {
+    const text = `Body.\n\n## Notable Disagreements\n\n- Topic A.\n\n## Confidence\n\n50: tied`;
+    const r = splitDisagreements(text);
+    expect(r.body).toBe("Body.");
+    expect(r.disagreements).toBe("- Topic A.");
+    expect(r.confidence?.score).toBe(50);
+  });
+
+  it("returns null when the Confidence block has no parseable number", () => {
+    const r = splitDisagreements("Body.\n\n## Confidence\n\nno number here");
+    expect(r.confidence).toBeNull();
+  });
+});

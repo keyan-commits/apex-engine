@@ -293,7 +293,13 @@ export function buildSynthPrompt(
       ? `\n\nSELF-CONSISTENCY: When the models materially disagree on a factual claim, a recommendation, or a numerical value, end your answer with a "${DISAGREEMENT_HEADING}" H2 section. Under it, list each disagreement as a single short bullet: "- <topic>: <Model A> says X; <Model B> says Y." Omit the section entirely (do not include the heading) when answers substantively agree. Do not flag mere stylistic or wording differences.`
       : "";
 
-  return `You are a synthesizer. ${answers.length} AI models were asked the same question.${rolePreamble} Your job: produce a single consolidated best answer by drawing on the strongest, most accurate insights from each response. Resolve contradictions. Cite sources by model name only when their views meaningfully differ. Be direct and useful — no preamble about your role.${consistencyClause}${stylePreamble}
+  // Wave 12.2 — confidence calibration. The model emits a final
+  // "## Confidence" section with a 0-100 score + a one-sentence
+  // justification. The UI surfaces this as a badge and offers a
+  // "re-run with more models" affordance when the score is low.
+  const confidenceClause = `\n\nCONFIDENCE CALIBRATION: After your answer (and after the optional Notable Disagreements section, if any), append a final H2 section exactly titled "## Confidence". Under that heading, write a single line containing an integer 0-100 followed by a brief one-sentence justification. 0 = pure speculation. 50 = informed guess. 80 = supported by multiple model agreement. 100 = directly answered, well-known, no uncertainty. Be honest — low confidence is more useful than false certainty.`;
+
+  return `You are a synthesizer. ${answers.length} AI models were asked the same question.${rolePreamble} Your job: produce a single consolidated best answer by drawing on the strongest, most accurate insights from each response. Resolve contradictions. Cite sources by model name only when their views meaningfully differ. Be direct and useful — no preamble about your role.${consistencyClause}${confidenceClause}${stylePreamble}
 
 ## Original question
 
