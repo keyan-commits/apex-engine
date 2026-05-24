@@ -3,9 +3,18 @@
 > Updated after every completed task. Read this first to resume work in a new session — it captures volatile state that `CLAUDE.md` doesn't (CLAUDE.md is stable architecture; this is "where are we right now").
 
 **Last updated:** 2026-05-24
-**Last action:** Wave 9 shipped — Streamable HTTP transport for the MCP server. `tsx watch` respawns the server on every source change; Claude Code reconnects on next tool call and re-fetches the tool list, so **code changes no longer require a CC restart**. New `pnpm mcp:http` + `pnpm mcp:install:http`. QA + Security review agents auto-dispatched, found 2 real issues (env-load bug in launchers, DNS-rebinding gap in transport options); both fixed in `9067dda`. 9 historic GitHub issues (#4–#12) closed with fix-commit references. 165/165 tests pass, all gates clean.
+**Last action:** Wave 10 shipped — `sourceProject` field on every feedback record + GitHub Issue title prefix (so cross-instance reports from other projects are immediately visible) + one-shot `pnpm setup` script that does the whole HTTP-transport install (`mcp:install:http` + `mcp:http`) in one command. Discoverability nags added: stdio installer prints a banner recommending HTTP, `apex_self_check` does the same when running on stdio. 177/177 tests, all gates clean. Eight new commits (`078b5f7`..`c097b61`) pushed.
 
-**Blocked on:** Nothing. To switch to HTTP transport: run `pnpm mcp:install:http` once, then `pnpm mcp:http` in a long-lived terminal. Existing stdio install still works (no breaking change).
+**Blocked on:** Nothing. **New users should run `pnpm setup` — that's it.** Existing stdio users see a banner pointing at `pnpm setup` every time they run `pnpm mcp:install` or call `apex_self_check`.
+
+## Wave 10 — what shipped (2026-05-24)
+
+| # | Feature | LOC | Commit |
+|---|---------|-----|--------|
+| sourceProject | Every `FeedbackRecord` gains an optional `sourceProject` field. `sanitizeSourceProject()` strips chars outside `[a-zA-Z0-9._/-]` + caps at 80 — safe to render in a public GH Issue body. `detectSourceProject()` auto-fills from `APEX_SOURCE_PROJECT` env, `CLAUDE_PROJECT_DIR` basename, or cwd basename, falling back to `apex-engine`. `apex_report` MCP tool exposes the param with a tool-description that tells the calling AI exactly what to pass. `buildIssueBody` prefixes the GitHub Issue title with `[<source>]`. Auto-bug / auto-improvement / qa-check / security-check all hardcode `sourceProject: "apex-engine"`. UI button + /api/feedback default to `"apex-engine"`. | ~190 | `078b5f7` |
+| One-shot `pnpm setup` | New `scripts/setup.ts`: checks `.env.local`, runs `pnpm mcp:install:http`, starts `pnpm mcp:http` (foreground or `--background` with pid file + log). Loud banners added to `pnpm mcp:install` (stdio path) recommending HTTP, and to `apex_self_check` output when running on stdio. Test fix: `http-server.ts` no longer bootstraps when imported as a library — gated by `isMain` check. | ~250 | `c097b61` |
+
+177/177 tests pass; pnpm qa:check + pnpm security:check + pnpm type-check + pnpm build all clean.
 
 ## Wave 9 — what shipped (2026-05-24)
 

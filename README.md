@@ -66,7 +66,7 @@ prompt → [optional ensemble of roles] → fan-out (parallel) → 4 answers →
 - **SQLite (FTS5)** via `better-sqlite3`
 - **react-syntax-highlighter** (Prism)
 - **unpdf** for PDF text extraction
-- **Vitest** — 13 test files, 108 tests
+- **Vitest** — 21 test files, 177 tests
 - **pnpm** via Node corepack
 
 ## Setup
@@ -191,11 +191,17 @@ claude mcp add apex-engine -- /absolute/path/to/apex-engine/bin/apex-engine-mcp
 
 ## Cross-instance feedback
 
-Every apex-engine instance (UI, MCP, API) can record bug reports and improvement suggestions to a local outbox. The repo owner batches them into GitHub Issues with `pnpm feedback:flush` (requires `gh` CLI authenticated). See [`feedback/README.md`](feedback/README.md) for the schema, storage layout, and privacy rules.
+Every apex-engine instance (UI, MCP, API) can record bug reports and improvement suggestions to a local outbox. Reports auto-flush to GitHub Issues every 30 min via the running MCP server (or via the standalone `pnpm feedback:watch` daemon). Manual flush available with `pnpm feedback:flush` (requires `gh` CLI authenticated). See [`feedback/README.md`](feedback/README.md) for the full schema + privacy rules.
 
 - **UI:** "Feedback" button in the header.
-- **MCP:** `apex_report` tool — call it from any Claude Code session, including ones outside the apex-engine project. The report lands in apex-engine's own `data/feedback/outbox/`.
+- **MCP:** `apex_report` tool — call it from any Claude Code session, including ones outside the apex-engine project. The report lands in apex-engine's own `data/feedback/outbox/`. **Pass `sourceProject`** with the basename of your current project so the resulting GitHub Issue title is prefixed with it — that's the visible evidence cross-instance reporting is flowing.
 - **HTTP:** `POST /api/feedback`.
+
+Auto-reports fire from inside apex-engine's own code paths:
+
+- `recordAutoBug` on provider stream errors, synth errors, history save failures (1-hour throttle + escalation at counts 5/25/100).
+- `recordAutoImprovement` from 5 session-aware detectors (solo-mode override clicks, provider failure clusters, repeated synth disagreements with the same model, cache cold-clusters, sustained alternative-synth selection).
+- `pnpm qa:check` and `pnpm security:check` write a feedback record on any failing step.
 
 ## Architecture
 

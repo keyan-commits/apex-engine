@@ -20,7 +20,7 @@ Per query, produce:
 - **LLM SDKs:**
   - `@anthropic-ai/claude-agent-sdk` — Claude (uses Claude Code OAuth, no API key)
   - `ai` (Vercel AI SDK v6) + `@ai-sdk/openai-compatible` + `@ai-sdk/google` + `@ai-sdk/groq`
-- **MCP:** `@modelcontextprotocol/sdk` 1.x (stdio transport, four tools)
+- **MCP:** `@modelcontextprotocol/sdk` 1.x · seven tools (apex_fanout, apex_synthesize, apex_decompose, apex_report, apex_self_check, apex_qa_review, apex_security_review). Two transports — HTTP (recommended; hot-reload via `tsx watch`) and stdio (legacy)
 - **State:** SQLite via `better-sqlite3` (history with FTS5, quota tracker, response cache, telemetry, attachment store)
 - **Markdown:** `react-markdown` + `react-syntax-highlighter` (Prism oneDark)
 - **PDFs:** `unpdf`
@@ -60,12 +60,19 @@ Provider tier resolution sits in front of every LLM call (`src/lib/tiers.ts` →
 
 ```
 apex-engine/
-├── bin/apex-engine-mcp                     (sh launcher; cd's into repo, exec tsx)
+├── bin/
+│   ├── apex-engine-mcp                     (stdio launcher; tsx, sources .env.local, exec'd by Claude Code)
+│   └── apex-engine-mcp-http                (HTTP launcher; tsx watch, sources .env.local, long-lived)
 ├── feedback/                                (gitignored data/feedback/ is the live inbox)
 │   └── README.md                            (cross-instance feedback channel docs)
 ├── scripts/
-│   ├── mcp-install.ts                       (pnpm mcp:install — registers MCP with `claude` CLI)
-│   └── feedback-flush.ts                    (pnpm feedback:flush — outbox → GH Issues via `gh`)
+│   ├── setup.ts                             (pnpm setup — one-shot HTTP install + start the server)
+│   ├── mcp-install.ts                       (pnpm mcp:install[:http] — register with `claude` CLI)
+│   ├── feedback-flush.ts                    (pnpm feedback:flush — outbox → GH Issues via `gh`)
+│   ├── feedback-watch.ts                    (pnpm feedback:watch — long-lived auto-flush daemon)
+│   ├── qa-check.ts                          (pnpm qa:check — type-check + tests + opt build)
+│   ├── qa-install-hooks.ts                  (pnpm qa:install-hooks — post-commit gate)
+│   └── security-check.ts                    (pnpm security:check — secret-scan + audit + invariants)
 ├── src/
 │   ├── app/
 │   │   ├── page.tsx                         (top-level state machine + reducer)
@@ -74,7 +81,7 @@ apex-engine/
 │   │   └── api/
 │   │       ├── ask/route.ts                 (SSE fan-out OR subagents; usage drain; cost write)
 │   │       ├── attachments/[sha256]/route.ts
-│   │       ├── feedback/route.ts            (POST feedback report)
+│   │       ├── feedback/route.ts            (POST — accepts sourceProject in body; allowlisted context)
 │   │       ├── health/route.ts
 │   │       ├── history/route.ts             (GET filters; PATCH star/tags; DELETE bulk)
 │   │       ├── history/export/route.ts
@@ -83,9 +90,12 @@ apex-engine/
 │   │       ├── resynthesize/route.ts
 │   │       ├── rewrite/route.ts             (POST — pre-flight prompt rewriter)
 │   │       └── stats/route.ts
-│   ├── components/                          (15 client components; see HANDOFF for the full list)
-│   ├── lib/                                 (engine + classify + rewriter + feedback + history + ...)
-│   └── mcp/server.ts                        (apex_fanout, apex_synthesize, apex_decompose, apex_report)
+│   ├── components/                          (16 client components incl. FeedbackButton; see HANDOFF)
+│   ├── lib/                                 (engine + classify + rewriter + feedback + auto-feedback + improvements + secret-patterns + feedback-flush + history + ...)
+│   └── mcp/
+│       ├── server.ts                        (stdio entrypoint — minimal)
+│       ├── http-server.ts                   (HTTP entrypoint — Streamable HTTP, dual-stack 127.0.0.1+::1)
+│       └── register-tools.ts                (shared tool registry: apex_fanout, apex_synthesize, apex_decompose, apex_report, apex_self_check, apex_qa_review, apex_security_review)
 ├── data/                                    (gitignored — apex.db + feedback/outbox + feedback/sent)
 ├── HANDOFF.md                                (volatile — current state, last action, next steps)
 ├── README.md                                 (public-facing)
@@ -95,6 +105,11 @@ apex-engine/
 ## Commands
 
 ```bash
+# First-time MCP setup — every apex-engine user runs this once:
+pnpm setup                # one-shot: HTTP install + start the long-lived server
+pnpm setup:background     # same, but detaches the server (pid in data/.mcp-http.pid)
+
+# Day-to-day:
 pnpm install         # install deps
 pnpm dev             # local server at http://localhost:3000
 pnpm build           # production build
@@ -102,9 +117,21 @@ pnpm type-check      # tsc --noEmit
 pnpm lint
 pnpm test            # vitest interactive
 pnpm test:run        # vitest one-shot (CI)
-pnpm mcp             # run the MCP server directly (stdio)
-pnpm mcp:install     # one-shot: register this clone as the `apex-engine` MCP server with `claude` CLI
-pnpm feedback:flush  # batch local feedback outbox → GitHub Issues (requires `gh` authenticated)
+
+# MCP server lifecycle:
+pnpm mcp:http        # long-lived HTTP server with tsx watch (called by `pnpm setup`)
+pnpm mcp:install:http  # register `apex-engine` with `claude mcp add --transport http`
+pnpm mcp             # stdio server (legacy — needs CC restart on code changes)
+pnpm mcp:install     # register the stdio launcher with `claude mcp add`
+
+# Feedback channel:
+pnpm feedback:flush  # batch local feedback outbox → GitHub Issues
+pnpm feedback:watch  # long-lived auto-flush daemon
+
+# QA / security:
+pnpm qa:check        # type-check + tests + opt build
+pnpm security:check  # secret-scan + pnpm audit + apex invariants
+pnpm qa:install-hooks  # install the post-commit gate
 ```
 
 ## Engineering Standards
