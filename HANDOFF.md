@@ -3,9 +3,19 @@
 > Updated after every completed task. Read this first to resume work in a new session — it captures volatile state that `CLAUDE.md` doesn't (CLAUDE.md is stable architecture; this is "where are we right now").
 
 **Last updated:** 2026-05-24
-**Last action:** Wave 11 + 12a + 12b shipped — smart context-budget + quality-aware routing (favor Claude when other providers exhausted, skip synth when N≤1, per-answer compression before synth, recursion-guard adjustment, Settings toggle) plus the two highest-consensus ground-breaking MoA features (confidence-calibrated synth + Self-Refine critique→revise pass). QA + Security review agents dispatched, found 1 BUG (CONFIDENCE_RE swallowing Notable Disagreements on reverse order) + 1 cost-accounting RISK; both fixed in `2449ce0`. 200/200 tests, all gates clean. Five new commits (`e584075`..`2449ce0`) pushed.
+**Last action:** Triage ops trio shipped on top of Wave 11+12: `pnpm feedback:status` (start-of-session snapshot), `pnpm mcp:reload` (force tsx-watch respawn when needed), and **automatic [auto-qa]/[auto-security] issue cleanup** on every passing gate run. The cleanup is gated by the safety contract: only closes auto-prefixed records, only after the corresponding gate currently passes, with audit-trail comment + `auto-closed` label + local `resolvedAt`/`resolvedCommit` patch. 200/200 tests, all gates clean. Three new commits (`815eb59`..`a73c3f8`) pushed.
 
-**Blocked on:** Nothing. Wave 12c (disagreement-driven re-fan-out) and 12d (Chain-of-Verification lite) deferred to next wave — they need their own UX design + cross-model validation, not safe to rush in.
+**Blocked on:** Nothing. Wave 12c (disagreement-driven re-fan-out) and 12d (Chain-of-Verification lite) still deferred to next wave — they need their own UX design + cross-model validation, not safe to rush in.
+
+## Triage ops trio (2026-05-24)
+
+| # | Feature | LOC | Commit |
+|---|---------|-----|--------|
+| `pnpm feedback:status` | Start/end-of-session snapshot: outbox count, last flush time, open GH `feedback`-labeled issues, suggested actions. Degrades gracefully without `gh`. | ~150 | `815eb59` |
+| `pnpm mcp:reload` | One-liner that `touch`es `src/mcp/http-server.ts` to force a `tsx watch` respawn when deep transitive changes don't auto-trigger one. CC reconnects on next tool call. | 1 | `7133fbd` |
+| Auto-cleanup of [auto-*] GH issues | `scripts/feedback-cleanup.ts` closes stale `[auto-qa]`/`[auto-security]` issues whose corresponding gate now passes. Audit-trail comment naming the SHA, `auto-closed` label, local JSON patched with `resolvedAt` + `resolvedCommit` (matched by signature). Rate-limited 1s between API mutations. Wired into qa-check.ts + security-check.ts so every passing run auto-sweeps silently. | ~340 | `a73c3f8` |
+
+Safety contract (apex_synthesize consensus): only title-prefix `[auto-qa]`/`[auto-security]`; never touches human-filed bugs or improvement records; only fires from inside a gate's success branch (so a coincidental pass on a stale checkout can't accidentally close a real issue); reversible via re-open (cleanup never re-closes already-closed issues).
 
 ## Wave 11 — smart context-budget + quality-aware routing (2026-05-24)
 

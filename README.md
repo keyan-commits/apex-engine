@@ -66,7 +66,7 @@ prompt → [optional ensemble of roles] → fan-out (parallel) → 4 answers →
 - **SQLite (FTS5)** via `better-sqlite3`
 - **react-syntax-highlighter** (Prism)
 - **unpdf** for PDF text extraction
-- **Vitest** — 24 test files, 200 tests
+- **Vitest** — 24 test files, 200 tests; post-commit hook auto-sweeps stale `[auto-qa]`/`[auto-security]` GitHub issues on every passing gate run
 - **pnpm** via Node corepack
 
 ## Setup

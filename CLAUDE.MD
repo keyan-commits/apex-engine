@@ -121,15 +121,17 @@ pnpm test            # vitest interactive
 pnpm test:run        # vitest one-shot (CI)
 
 # MCP server lifecycle:
-pnpm mcp:http        # long-lived HTTP server with tsx watch (called by `pnpm setup`)
+pnpm mcp:http          # long-lived HTTP server with tsx watch (called by `pnpm setup`)
+pnpm mcp:reload        # touch entry file to force tsx-watch respawn when deep imports change
 pnpm mcp:install:http  # register `apex-engine` with `claude mcp add --transport http`
-pnpm mcp             # stdio server (legacy — needs CC restart on code changes)
-pnpm mcp:install     # register the stdio launcher with `claude mcp add`
+pnpm mcp               # stdio server (legacy — needs CC restart on code changes)
+pnpm mcp:install       # register the stdio launcher with `claude mcp add`
 
 # Feedback channel:
-pnpm feedback:status # triage snapshot — pending outbox + open GH issues
-pnpm feedback:flush  # batch local feedback outbox → GitHub Issues
-pnpm feedback:watch  # long-lived auto-flush daemon
+pnpm feedback:status  # triage snapshot — pending outbox + open GH issues + suggested actions
+pnpm feedback:flush   # batch local feedback outbox → GitHub Issues
+pnpm feedback:watch   # long-lived auto-flush daemon
+pnpm feedback:cleanup # close stale [auto-qa]/[auto-security] issues (auto-invoked by qa:check + security:check on success)
 
 # QA / security:
 pnpm qa:check        # type-check + tests + opt build

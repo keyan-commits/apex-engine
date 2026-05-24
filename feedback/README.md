@@ -75,15 +75,51 @@ curl -X POST http://localhost:3000/api/feedback \
 
 Run `pnpm feedback:status` at the start (or end) of every work session
 to see what needs attention: the pending outbox count, the last
-auto-flush timestamp, and every open GitHub Issue labelled `feedback`.
+auto-flush timestamp, and every open GitHub Issue labelled `feedback`,
+plus suggested actions.
 
 The post-commit hook auto-emits records when `pnpm qa:check` or
 `pnpm security:check` fails — including during intermediate commits in
-a multi-commit wave that get fixed in the next commit. Those stale
-records accumulate as open GitHub Issues that nobody closes
-automatically. `feedback:status` is the catch-up tool: close anything
-already fixed (with `gh issue close <N> --comment "Fixed in <commit>"`)
-and triage the rest.
+a multi-commit wave that get fixed in the next commit. Those would
+accumulate as stale open GitHub Issues, **but** every passing
+gate run now auto-sweeps them via `pnpm feedback:cleanup` (see below).
+You can also run cleanup manually any time.
+
+## Auto-cleanup of stale [auto-*] issues
+
+`pnpm feedback:cleanup` closes `[auto-qa]` / `[auto-security]` issues
+on GitHub whose corresponding gate now passes. It runs automatically
+after every passing `pnpm qa:check` / `pnpm security:check` (silent
+when there's nothing to close), so the typical flow is:
+
+```
+commit code → post-commit hook → qa:check + security:check pass →
+  auto-cleanup sweeps stale [auto-*] issues → GH inbox stays honest
+```
+
+Safety contract:
+- Closes ONLY issues whose title contains `[auto-qa]` or `[auto-security]`.
+  Human-filed bugs (no `[auto-` prefix) are NEVER touched. Improvement
+  records — auto or human — are NEVER touched.
+- Only runs from inside a gate's success branch, so a coincidental
+  pass on a stale checkout can't accidentally close real issues.
+- Audit trail: closes with a comment naming the current HEAD SHA
+  ("Auto-closed: gates now pass on commit `<SHA>` ..."), adds an
+  `auto-closed` GitHub label, and patches the matching JSON in
+  `data/feedback/sent/` with `resolvedAt` + `resolvedCommit`.
+- Reversible: re-open the issue on GitHub and the cleanup won't touch
+  it again (it scans for STATE=open only).
+- Rate-limited at 1s between API mutations to stay under GitHub's
+  throttle even when closing 50+ stale records in a sweep.
+
+Manual invocation:
+
+```bash
+pnpm feedback:cleanup            # close all stale [auto-*]
+pnpm feedback:cleanup --dry-run  # preview without closing
+pnpm feedback:cleanup --qa-only
+pnpm feedback:cleanup --security-only
+```
 
 ## Flushing to GitHub Issues
 
