@@ -3,7 +3,90 @@
 > Updated after every completed task. Read this first to resume work in a new session — it captures volatile state that `CLAUDE.md` doesn't (CLAUDE.md is stable architecture; this is "where are we right now").
 
 **Last updated:** 2026-05-24
-**Last action:** Shipped a six-wave, 100-feature compounding-improvements pass driven by `apex_fanout` + `apex_synthesize` cross-checks at each architectural fork.
+**Last action:** Pushed the 100-feature pass (6 waves, commits 8d475a8..736c39e) to `origin/main`. Then ran an `apex_synthesize` research pass (Research ensemble + Claude) on "must-have features for prompt-quality + cost-effective model routing." 16 features identified, top 5 ranked, full plan captured in **Next session** below.
+
+**Blocked on:** **User must restart Claude Code** before the next session — the currently-running `apex-engine` MCP child process was spawned before `apex_decompose` was added in Wave 5. After restart, `apex_decompose` becomes callable and can be used to plan/execute the next-wave work itself.
+
+## Next session — Accuracy + cost-routing wave (5 features)
+
+Cross-checked with all 4 models + the synthesizer. Strong consensus on this order. ~520 LOC total, no L-complexity work, sets up the 11 backlog items.
+
+### Ship order (compounding)
+
+**1. A7 — Self-consistency cross-check in synth** (~100 LOC)
+- *Files:* `src/lib/synthesize.ts` (modify `buildSynthPrompt` to ask the synth to identify, score, and surface disagreements across the 4 answers), `src/components/SynthesizerPanel.tsx` (render disagreement markers when present).
+- *Why first:* highest quality-per-LOC. No new data, no migration, no UI surface. Invisible when models agree; valuable when they don't.
+
+**2. B3 — Persisted cost tracking** (~100 LOC)
+- *Files:* `src/lib/cost.ts` (extend with real per-model prices; today it's a stub with zeros), `src/lib/history.ts` (migration: `total_cost_usd`, `total_input_tokens`, `total_output_tokens`), `src/lib/engine.ts` (drain `usage` from each provider's stream — Vercel AI SDK exposes `result.usage`), `src/lib/synthesize.ts` (same).
+- *Why second:* **foundation.** Every other routing decision (B5, B7, B8) is unprincipled without spend data. `cost.ts` already exists but never writes — fix the gap.
+
+**3. B1 — Heuristic complexity classifier** (~150 LOC)
+- *Files:* new `src/lib/classify.ts` (~100 LOC: regex + length + code-fence count + question-mark count + keyword bag → `{simple, medium, complex}` + ambiguity score; **must stay sync** — no LLM call), `src/lib/tiers.ts` (+30, accept complexity in `resolveModel`), `src/lib/engine.ts` (+20, pass complexity into `fanOut`).
+- *Why third:* gateway. Unlocks B2 / B4 / B5 / A2. The hard rule per cross-check consensus: **no LLM call here.** A 300ms classifier call defeats the speed win — Groq *is* the fan-out.
+
+**4. B2 — Per-query single-model mode** (~30 LOC)
+- *Files:* `src/lib/engine.ts` (+15, "solo" branch), `src/app/api/ask/route.ts` (+15, skip fan-out + synth when `simple`, run only Groq Llama, emit normal SSE events with a "solo" flag).
+- *Why fourth:* once B1 lands, ~75% of trivial queries skip 3/4 calls + synth. Biggest cost cut in the wave. UI gets a small "solo" badge — no new panel.
+
+**5. A1 — Pre-flight prompt rewriter** (~140 LOC)
+- *Files:* new `src/lib/rewriter.ts` (~80 LOC: cheap Groq `gpt-oss-20b` rewrites vague prompts; returns `{rewritten, reasoning}`), `src/app/api/ask/route.ts` (+20, emit `rewriter-suggestion` SSE event before fan-out), `src/components/ChatInput.tsx` (+40, preview chip with diff + "use original" toggle).
+- *Why fifth:* dramatic answer lift on vague prompts, server-side, free (Groq). **Critical UX:** never silently mutate — always show diff with "use original" button. Hidden rewriting = trust killer (Claude review point).
+
+### Dependencies
+
+- **B3 → B5, B7, B8** (can't tune what you can't measure).
+- **B1 → B2, B4, B5, A2** (shared complexity/ambiguity signal — write it once).
+- **A3 → A4** (placeholder schema before few-shot exemplars).
+
+### Backlog (subsequent waves, full feature list from the research)
+
+**Area A — prompt quality:**
+- A2 Clarifying-question gate (re-uses B1's ambiguity score; new `clarify-ask` SSE event + `ClarifyDialog.tsx`)
+- A3 Typed-placeholder templates (`{{var: label/type/required}}` in `templates.ts`)
+- A4 Few-shot example injection (templates carry I/O exemplars)
+- A5 Cite-or-decline mode (synth-only — never enforce on base 4)
+- A6 Spec mode (JSON schema in synth only — Llama/Groq structured output is flaky)
+- A8 Prompt-injection sanitizer (`<|system|>` token strip, jailbreak phrase scrub)
+
+**Area B — cost routing:**
+- B4 Speed↔Quality slider (5 detents, replaces Eco mode toggle when shipped)
+- B5 Escalation ladder (run cheap first; re-run on big if low-confidence)
+- B6 Free-tier-only mode (locks routing to Groq + Gemini Flash + GitHub Models)
+- B7 Learned routing (k-NN over embedding-augmented history — **defer until >1000 rows**)
+- B8 Budget guard (daily/monthly USD cap, soft-warn at 80%, hard-block at 100%)
+
+### Pitfalls to avoid (all 4 models + synth consensus)
+
+1. **Never run an LLM call to classify every query.** Use sync regex/length/keyword heuristics. Anything else collapses the latency win.
+2. **Don't build escalation (B5) before cost tracking (B3).** Adds latency to every query, and you can't prove it wins without measurement.
+3. **Don't build the learned router (B7) until history has >1000 rows.** Signal is noise below that.
+4. **Don't kill in-flight streams for "speculative early stop."** Groq finishes in 1-2s; UI flicker isn't worth zero real savings.
+5. **Don't enforce JSON schemas on Llama-on-Groq.** Structured-output is flaky. Spec mode applies only to synth.
+6. **Never silently rewrite user prompts.** Always show the diff with a "use original" toggle.
+7. **Don't ask the 4 base models for citations.** They hallucinate URLs. Citation validation lives only in the synth pass, cross-referencing the other 3 answers + text/PDF attachments.
+8. **Don't fold away Eco mode before B4 ships.** Existing muscle memory.
+
+### Resume-from-clean-state commands
+
+```bash
+# After Claude Code restart, verify MCP picked up apex_decompose:
+# (in Claude Code) call apex_decompose with prompt "test ping"
+# Expect: decomposed sub-questions with answers, no "tool not found" error.
+
+cd /Users/nikoe/Development/Study/apex-engine
+git status                            # should be clean, on main, in sync with origin
+pnpm install                          # if node_modules out of date
+pnpm test:run                         # baseline: should be 84/84 passing
+pnpm type-check                       # baseline: clean
+
+# Start with feature 1 (A7 — self-consistency in synth):
+# Edit src/lib/synthesize.ts → buildSynthPrompt(). Add a section asking
+# the synth to surface disagreements with confidence tags.
+# Edit src/components/SynthesizerPanel.tsx to render flagged disagreements.
+# Test by running a query where the 4 models will diverge
+# (e.g., "Should I use Tokio or async-std for a new Rust project in 2026?").
+```
 
 ## What's in apex-engine today
 
