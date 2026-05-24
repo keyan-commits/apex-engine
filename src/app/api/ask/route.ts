@@ -187,6 +187,49 @@ function errorCodeOf(err: unknown): string {
   );
 }
 
+// Wave 13d — known-transient errors from upstream LLM providers. Not
+// apex-engine bugs: they're rate-limit / quota / retry-after operational
+// signals that say nothing about our code. Emitting auto-feedback bugs
+// for them pollutes the GitHub Issue queue with noise. We still log + show
+// the error to the user (via the SSE error event); we just don't file it
+// as a bug.
+//
+// Real failure caught 2026-05-24: a Gemini AI_RetryError during a research
+// call became GH issue #17 — pure noise.
+function isTransientExternalError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const e = err as {
+    name?: string;
+    code?: string | number;
+    status?: number;
+    statusCode?: number;
+    cause?: { status?: number };
+    message?: string;
+  };
+  const status = Number(e.status ?? e.statusCode ?? e.cause?.status ?? 0);
+  if (status === 408 || status === 429 || status === 502 || status === 503 || status === 504) {
+    return true;
+  }
+  const name = String(e.name ?? "");
+  if (name === "AbortError" || name === "TimeoutError" || name === "AI_RetryError") {
+    return true;
+  }
+  const code = String(e.code ?? "");
+  if (code === "ETIMEDOUT" || code === "ECONNRESET" || code === "ENETUNREACH") {
+    return true;
+  }
+  const msg = String(e.message ?? "").toLowerCase();
+  if (
+    msg.includes("rate limit") ||
+    msg.includes("quota exceeded") ||
+    msg.includes("too many requests") ||
+    msg.includes("retry-after")
+  ) {
+    return true;
+  }
+  return false;
+}
+
 function stackHeadOf(err: unknown): string | undefined {
   if (!err || typeof err !== "object") return undefined;
   const stack = (err as { stack?: string }).stack;
@@ -476,21 +519,27 @@ export async function POST(req: Request) {
               acc.error = message;
               send({ type: "error", provider: item.provider, message });
               const code = errorCodeOf(err);
-              recordAutoBug({
-                kind: "bug",
-                signature: {
-                  operation: "fanout.stream",
-                  provider: item.provider,
-                  model: item.model,
-                  errorCode: code,
-                },
-                context: {
-                  latencyMs,
-                  tier: item.tier,
-                  role: item.role ?? undefined,
-                  stackHeadLine: stackHeadOf(err),
-                },
-              });
+              // Don't pollute the bug tracker with transient upstream
+              // rate-limits / retries / timeouts — those are
+              // operational, not code bugs. Still feed the improvement
+              // detector so a sustained pattern still surfaces.
+              if (!isTransientExternalError(err)) {
+                recordAutoBug({
+                  kind: "bug",
+                  signature: {
+                    operation: "fanout.stream",
+                    provider: item.provider,
+                    model: item.model,
+                    errorCode: code,
+                  },
+                  context: {
+                    latencyMs,
+                    tier: item.tier,
+                    role: item.role ?? undefined,
+                    stackHeadLine: stackHeadOf(err),
+                  },
+                });
+              }
               noteProviderFailure(item.provider, code);
             }
             // Drain token usage now that the stream has settled. Resolved in
@@ -660,18 +709,20 @@ export async function POST(req: Request) {
                 provider: "synthesizer",
                 message: synthError,
               });
-              recordAutoBug({
-                kind: "bug",
-                signature: {
-                  operation: "synth",
-                  model: effectiveSynthesizerId,
-                  errorCode: errorCodeOf(err),
-                },
-                context: {
-                  latencyMs: Date.now() - synthStart,
-                  stackHeadLine: stackHeadOf(err),
-                },
-              });
+              if (!isTransientExternalError(err)) {
+                recordAutoBug({
+                  kind: "bug",
+                  signature: {
+                    operation: "synth",
+                    model: effectiveSynthesizerId,
+                    errorCode: errorCodeOf(err),
+                  },
+                  context: {
+                    latencyMs: Date.now() - synthStart,
+                    stackHeadLine: stackHeadOf(err),
+                  },
+                });
+              }
             }
             if (synthUsageRef.current) {
               const synthCfg = findSynthesizer(effectiveSynthesizerId);
