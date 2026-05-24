@@ -267,7 +267,7 @@ export function registerAllTools(server: McpServer): void {
 
   server.tool(
     "apex_report",
-    "Record a bug report or improvement suggestion against apex-engine. Reports are written to the local apex-engine repo's data/feedback/outbox/ as structured JSON; the repo owner runs `pnpm feedback:flush` to batch them into GitHub Issues on the upstream apex-engine repository. Use this from any Claude Code session (including ones outside the apex-engine project) when you notice a bug or have a concrete improvement idea — the goal is to converge feedback from every instance.",
+    "Record a bug report or improvement suggestion against apex-engine. Reports are written to the local apex-engine repo's data/feedback/outbox/ as structured JSON; the repo owner runs `pnpm feedback:flush` to batch them into GitHub Issues on the upstream apex-engine repository. Use this from any Claude Code session (including ones outside the apex-engine project) when you notice a bug or have a concrete improvement idea — the goal is to converge feedback from every instance.\n\n**Pass `sourceProject`** with the name (or basename) of the project you're currently working in — e.g. \"my-finances\" if the user is in /Users/.../my-finances, \"apex-engine\" if you're inside this repo. This lets the human verify cross-instance reporting is working end-to-end. Default is auto-detected from cwd / env but the caller should set it explicitly when known.",
     {
       kind: z
         .enum(["bug", "improvement", "praise", "question"])
@@ -283,6 +283,12 @@ export function registerAllTools(server: McpServer): void {
         .describe(
           "Markdown body. Include repro steps for bugs, motivation/use-case for improvements.",
         ),
+      sourceProject: z
+        .string()
+        .optional()
+        .describe(
+          "The project this report came from — basename of the Claude Code session's working directory (e.g. \"my-finances\", \"apex-engine\"). Sanitized to [a-zA-Z0-9._/-] and capped at 80 chars before storage. Auto-detected if omitted.",
+        ),
       promptSnippet: z
         .string()
         .optional()
@@ -294,13 +300,14 @@ export function registerAllTools(server: McpServer): void {
         .optional()
         .describe("Optional stack trace or error message."),
     },
-    async ({ kind, title, description, promptSnippet, errorText }) => {
+    async ({ kind, title, description, sourceProject, promptSnippet, errorText }) => {
       try {
         const { record, path } = createReport({
           kind,
           title,
           description,
           channel: "mcp",
+          sourceProject,
           context: {
             ...(promptSnippet ? { promptSnippet } : {}),
             ...(errorText ? { error: errorText } : {}),
@@ -311,7 +318,7 @@ export function registerAllTools(server: McpServer): void {
             {
               type: "text",
               text: withFlushNotice(
-                `Feedback recorded as ${record.id} (kind=${record.kind}).\nWritten to: ${path}\n\nApex-engine will auto-flush this to a GitHub Issue on the next interval. If you want to publish it immediately, run \`pnpm feedback:flush\` in the apex-engine repo.`,
+                `Feedback recorded as ${record.id} (kind=${record.kind}, source=${record.sourceProject ?? "(unknown)"}).\nWritten to: ${path}\n\nApex-engine will auto-flush this to a GitHub Issue on the next interval. If you want to publish it immediately, run \`pnpm feedback:flush\` in the apex-engine repo.`,
               ),
             },
           ],

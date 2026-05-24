@@ -146,6 +146,8 @@ export function recordAutoBug(input: AutoBugInput, channel: FeedbackChannel = "a
       channel,
       auto: true,
       signature: sig,
+      // Auto records always originate from apex-engine's own code paths.
+      sourceProject: "apex-engine",
       context: {
         tags: {
           operation: input.signature.operation,
@@ -186,6 +188,7 @@ export function recordAutoImprovement(
       channel,
       auto: true,
       signature: sig,
+      sourceProject: "apex-engine",
       context: {
         tags: {
           pattern: input.signature.pattern,

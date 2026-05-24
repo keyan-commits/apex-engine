@@ -69,6 +69,14 @@ export type FeedbackRecord = {
     apexVersion: string;
     gitCommit: string | null;
   };
+  // Which project / repo the report came from. For reports triggered
+  // from inside apex-engine itself this is "apex-engine"; for reports
+  // filed via apex_report MCP tool from another Claude Code session
+  // (e.g. while the user is working on a different project) this
+  // names that project, so the user can verify that cross-instance
+  // reporting is actually flowing. Allowed chars: [a-zA-Z0-9._/-];
+  // sanitized at write time so it can't contain markdown / HTML.
+  sourceProject?: string;
   context?: FeedbackContext;
   // True for records emitted by the auto-feedback or improvements detectors
   // (F2/F4). Human-filed reports omit this field. Triage can filter on it.
@@ -80,6 +88,41 @@ export type FeedbackRecord = {
 
 const PROMPT_SNIPPET_MAX = 200;
 const TITLE_MAX = 120;
+const SOURCE_PROJECT_MAX = 80;
+// Keep the source project string narrow: alphanum + a few separators.
+// Stops markdown / HTML / URL injection when this lands in a public
+// GitHub Issue body.
+const SOURCE_PROJECT_ALLOWED = /[^a-zA-Z0-9._\-/]/g;
+const APEX_ENGINE_REPO_BASENAME = "apex-engine";
+
+export function sanitizeSourceProject(raw: unknown): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  const cleaned = raw.trim().replace(SOURCE_PROJECT_ALLOWED, "");
+  if (!cleaned) return undefined;
+  return cleaned.slice(0, SOURCE_PROJECT_MAX);
+}
+
+// Auto-detect the source project when the caller doesn't provide one.
+// Order of preference:
+//   1. Explicit env var APEX_SOURCE_PROJECT (set by callers that know)
+//   2. CLAUDE_PROJECT_DIR env var (Claude Code may set this in future
+//      releases; harmless when absent)
+//   3. process.cwd() basename (works for CLI / pnpm script callers)
+//   4. "apex-engine" fallback — most server-side callers are running
+//      inside this repo.
+export function detectSourceProject(): string {
+  const fromEnv =
+    sanitizeSourceProject(process.env.APEX_SOURCE_PROJECT) ??
+    sanitizeSourceProject(
+      process.env.CLAUDE_PROJECT_DIR &&
+        process.env.CLAUDE_PROJECT_DIR.split("/").pop(),
+    );
+  if (fromEnv) return fromEnv;
+  const cwdBasename = process.cwd().split("/").pop();
+  const cwdProject = sanitizeSourceProject(cwdBasename);
+  if (cwdProject) return cwdProject;
+  return APEX_ENGINE_REPO_BASENAME;
+}
 
 let cachedGitCommit: string | null | undefined;
 
@@ -131,6 +174,8 @@ export type CreateReportInput = {
   context?: FeedbackContext;
   auto?: boolean;
   signature?: string;
+  // Optional; falls back to detectSourceProject() when omitted.
+  sourceProject?: string;
 };
 
 export function createReport(input: CreateReportInput): {
@@ -155,6 +200,9 @@ export function createReport(input: CreateReportInput): {
       }
     : undefined;
 
+  const sourceProject =
+    sanitizeSourceProject(input.sourceProject) ?? detectSourceProject();
+
   const record: FeedbackRecord = {
     id,
     kind: input.kind,
@@ -169,6 +217,7 @@ export function createReport(input: CreateReportInput): {
       apexVersion: apexVersion(),
       gitCommit: gitCommit(),
     },
+    sourceProject,
     ...(context ? { context } : {}),
     ...(input.auto ? { auto: true } : {}),
     ...(input.signature ? { signature: input.signature } : {}),

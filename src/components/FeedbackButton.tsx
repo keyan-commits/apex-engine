@@ -42,6 +42,10 @@ export function FeedbackButton() {
           kind,
           title: title.trim(),
           description,
+          // The UI button is rendered by apex-engine's own web app, so
+          // by definition the report originates from this repo. The
+          // server still re-sanitizes this field before persistence.
+          sourceProject: "apex-engine",
           context: {
             url: typeof window !== "undefined" ? window.location.pathname : "",
           },

@@ -99,8 +99,13 @@ function labelsFor(kind: string): string[] {
 }
 
 export function buildIssueBody(rec: FeedbackRecord): { title: string; body: string } {
-  const title = `[${rec.kind}] ${rec.title}`;
+  // Source project shows in BOTH the title (so triage skim sees it
+  // immediately) and the body. Sanitized at creation time, so it's
+  // safe to render here without re-escaping.
+  const sourceTag = rec.sourceProject ? `[${rec.sourceProject}] ` : "";
+  const title = `${sourceTag}[${rec.kind}] ${rec.title}`;
   const lines: string[] = [
+    `**Source project:** \`${rec.sourceProject ?? "(unknown)"}\``,
     `**Channel:** ${rec.channel}`,
     `**Submitted:** ${rec.submittedAt}`,
     `**Instance:** ${rec.instance.hostname} (${rec.instance.platform}, node ${rec.instance.nodeVersion}, apex ${rec.instance.apexVersion}, commit ${rec.instance.gitCommit ?? "(none)"})`,

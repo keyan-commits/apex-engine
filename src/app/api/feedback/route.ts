@@ -62,16 +62,23 @@ export async function POST(req: Request) {
 
   const ctx = sanitizeContext(body.context);
 
+  // UI button lives inside apex-engine itself, so by default the
+  // sourceProject is the local repo. Allow an explicit override (e.g.
+  // for future cross-repo embedding) by reading body.sourceProject.
+  const sourceProject =
+    typeof body.sourceProject === "string" ? body.sourceProject : "apex-engine";
+
   try {
     const { record, path } = createReport({
       kind,
       title,
       description,
       channel: "ui",
+      sourceProject,
       context: ctx,
     });
-    log.info(`feedback recorded: ${record.id} kind=${record.kind}`);
-    return Response.json({ id: record.id, path });
+    log.info(`feedback recorded: ${record.id} kind=${record.kind} source=${record.sourceProject}`);
+    return Response.json({ id: record.id, path, sourceProject: record.sourceProject });
   } catch (err) {
     log.error("feedback write failed", err);
     return Response.json(

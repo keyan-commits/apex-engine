@@ -90,6 +90,7 @@ function emitFailureRecord(failed: StepResult): void {
       ].join("\n"),
       channel: "cli",
       auto: true,
+      sourceProject: "apex-engine",
       signature: `qa:${failed.name}:${failed.exitCode}`,
       context: {
         tags: {

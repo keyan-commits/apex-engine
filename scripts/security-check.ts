@@ -265,6 +265,7 @@ function emitFailureRecord(failed: CheckResult): void {
       ].join("\n"),
       channel: "cli",
       auto: true,
+      sourceProject: "apex-engine",
       signature: `security:${failed.name}:${failed.severity ?? "x"}`,
       context: {
         tags: {

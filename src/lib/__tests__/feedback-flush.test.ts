@@ -51,6 +51,24 @@ describe("buildIssueBody", () => {
     expect(body).toContain("**Signature:** `abc123def456`");
   });
 
+  it("renders the source project in the title prefix and the body", () => {
+    const { title, body } = buildIssueBody(
+      makeRecord({ sourceProject: "my-finances", kind: "bug", title: "Crash" }),
+    );
+    expect(title).toBe("[my-finances] [bug] Crash");
+    expect(body).toContain("**Source project:** `my-finances`");
+  });
+
+  it("renders (unknown) for the source project when missing", () => {
+    // Manually omit sourceProject by setting it to undefined post-hoc.
+    const rec = makeRecord();
+    delete (rec as { sourceProject?: string }).sourceProject;
+    const { title, body } = buildIssueBody(rec);
+    // No [source] prefix when missing.
+    expect(title.startsWith("[bug]")).toBe(true);
+    expect(body).toContain("**Source project:** `(unknown)`");
+  });
+
   it("renders context tags as a comma-separated list", () => {
     const { body } = buildIssueBody(
       makeRecord({
