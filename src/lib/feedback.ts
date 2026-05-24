@@ -70,6 +70,12 @@ export type FeedbackRecord = {
     gitCommit: string | null;
   };
   context?: FeedbackContext;
+  // True for records emitted by the auto-feedback or improvements detectors
+  // (F2/F4). Human-filed reports omit this field. Triage can filter on it.
+  auto?: boolean;
+  // Stable hash of {kind, provider, model, errorCode, ...} used by the
+  // dedup/throttle layer. Only present on auto records.
+  signature?: string;
 };
 
 const PROMPT_SNIPPET_MAX = 200;
@@ -123,6 +129,8 @@ export type CreateReportInput = {
   description: string;
   channel: FeedbackChannel;
   context?: FeedbackContext;
+  auto?: boolean;
+  signature?: string;
 };
 
 export function createReport(input: CreateReportInput): {
@@ -162,6 +170,8 @@ export function createReport(input: CreateReportInput): {
       gitCommit: gitCommit(),
     },
     ...(context ? { context } : {}),
+    ...(input.auto ? { auto: true } : {}),
+    ...(input.signature ? { signature: input.signature } : {}),
   };
 
   const path = join(OUTBOX, `${id}.json`);

@@ -1,4 +1,5 @@
 import { saveAttachment, type AttachmentMeta } from "@/lib/attachments";
+import { recordAutoBug } from "@/lib/auto-feedback";
 import { answersSignature, cacheGet, cacheKey, cachePut } from "@/lib/cache";
 import { classify } from "@/lib/classify";
 import { estimateCost } from "@/lib/cost";
@@ -124,6 +125,32 @@ async function parseRequest(req: Request): Promise<{ ok: true; body: ParsedBody 
       forceFullFanout: body.forceFullFanout === true,
     },
   };
+}
+
+function errorCodeOf(err: unknown): string {
+  if (!err || typeof err !== "object") return "unknown";
+  const e = err as {
+    name?: string;
+    code?: string | number;
+    status?: number;
+    statusCode?: number;
+    cause?: { status?: number };
+  };
+  return String(
+    e.status ?? e.statusCode ?? e.cause?.status ?? e.code ?? e.name ?? "unknown",
+  );
+}
+
+function stackHeadOf(err: unknown): string | undefined {
+  if (!err || typeof err !== "object") return undefined;
+  const stack = (err as { stack?: string }).stack;
+  if (!stack) return undefined;
+  const line = stack.split("\n").find((l) => l.trim().startsWith("at "));
+  if (!line) return undefined;
+  return line.replace(/\((.*?)\)/, (_m, inner: string) => {
+    const parts = inner.split("/");
+    return `(${parts.slice(-2).join("/")})`;
+  });
 }
 
 function buildParentContext(parentId: number | null, depthLimit = 5): string {
@@ -386,6 +413,21 @@ export async function POST(req: Request) {
               const message = userFacingMessage(err);
               acc.error = message;
               send({ type: "error", provider: item.provider, message });
+              recordAutoBug({
+                kind: "bug",
+                signature: {
+                  operation: "fanout.stream",
+                  provider: item.provider,
+                  model: item.model,
+                  errorCode: errorCodeOf(err),
+                },
+                context: {
+                  latencyMs,
+                  tier: item.tier,
+                  role: item.role ?? undefined,
+                  stackHeadLine: stackHeadOf(err),
+                },
+              });
             }
             // Drain token usage now that the stream has settled. Resolved in
             // engine.streamFor; null when the provider omits usage (Claude
@@ -477,6 +519,18 @@ export async function POST(req: Request) {
                 provider: "synthesizer",
                 message: synthError,
               });
+              recordAutoBug({
+                kind: "bug",
+                signature: {
+                  operation: "synth",
+                  model: effectiveSynthesizerId,
+                  errorCode: errorCodeOf(err),
+                },
+                context: {
+                  latencyMs: Date.now() - synthStart,
+                  stackHeadLine: stackHeadOf(err),
+                },
+              });
             }
             if (synthUsageRef.current) {
               const synthCfg = findSynthesizer(effectiveSynthesizerId);
@@ -551,6 +605,14 @@ export async function POST(req: Request) {
           send({
             type: "warning",
             message: `Failed to save history: ${userFacingMessage(err)}`,
+          });
+          recordAutoBug({
+            kind: "bug",
+            signature: {
+              operation: "history.save",
+              errorCode: errorCodeOf(err),
+            },
+            context: { stackHeadLine: stackHeadOf(err) },
           });
         }
       } finally {
