@@ -21,6 +21,8 @@ Per query, produce:
   - `@anthropic-ai/claude-agent-sdk` — Claude (uses Claude Code OAuth, no API key)
   - `ai` (Vercel AI SDK v6) + `@ai-sdk/openai-compatible` + `@ai-sdk/google` + `@ai-sdk/groq`
 - **MCP:** `@modelcontextprotocol/sdk` 1.x · seven tools (apex_fanout, apex_synthesize, apex_decompose, apex_report, apex_self_check, apex_qa_review, apex_security_review). Two transports — HTTP (recommended; hot-reload via `tsx watch`) and stdio (legacy)
+- **Quality-aware routing (Wave 11):** static `QUALITY_SCORE` per provider (claude=4 > openai=3 > llama=2 = gemini=2). When 2+ non-Claude providers are quota-exhausted, the synth auto-upgrades to `claude-sonnet-4-6` (using the user's Claude Code subscription) — unless Eco mode is on or the user opts out via the Settings toggle. Skip-synth-on-N≤1 prevents wasteful pass-through synth calls.
+- **Confidence + Self-Refine (Wave 12):** synth prompt asks for a `## Confidence` 0-100 score; UI surfaces a badge + low-confidence callout. Optional Self-Refine toggle adds a critique→revise pass on the synth (~2× latency, ~3× tokens, opt-in)
 - **State:** SQLite via `better-sqlite3` (history with FTS5, quota tracker, response cache, telemetry, attachment store)
 - **Markdown:** `react-markdown` + `react-syntax-highlighter` (Prism oneDark)
 - **PDFs:** `unpdf`

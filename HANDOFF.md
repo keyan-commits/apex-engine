@@ -3,9 +3,52 @@
 > Updated after every completed task. Read this first to resume work in a new session — it captures volatile state that `CLAUDE.md` doesn't (CLAUDE.md is stable architecture; this is "where are we right now").
 
 **Last updated:** 2026-05-24
-**Last action:** Wave 10 shipped — `sourceProject` field on every feedback record + GitHub Issue title prefix (so cross-instance reports from other projects are immediately visible) + one-shot `pnpm setup` script that does the whole HTTP-transport install (`mcp:install:http` + `mcp:http`) in one command. Discoverability nags added: stdio installer prints a banner recommending HTTP, `apex_self_check` does the same when running on stdio. 177/177 tests, all gates clean. Eight new commits (`078b5f7`..`c097b61`) pushed.
+**Last action:** Wave 11 + 12a + 12b shipped — smart context-budget + quality-aware routing (favor Claude when other providers exhausted, skip synth when N≤1, per-answer compression before synth, recursion-guard adjustment, Settings toggle) plus the two highest-consensus ground-breaking MoA features (confidence-calibrated synth + Self-Refine critique→revise pass). QA + Security review agents dispatched, found 1 BUG (CONFIDENCE_RE swallowing Notable Disagreements on reverse order) + 1 cost-accounting RISK; both fixed in `2449ce0`. 200/200 tests, all gates clean. Five new commits (`e584075`..`2449ce0`) pushed.
 
-**Blocked on:** Nothing. **New users should run `pnpm setup` — that's it.** Existing stdio users see a banner pointing at `pnpm setup` every time they run `pnpm mcp:install` or call `apex_self_check`.
+**Blocked on:** Nothing. Wave 12c (disagreement-driven re-fan-out) and 12d (Chain-of-Verification lite) deferred to next wave — they need their own UX design + cross-model validation, not safe to rush in.
+
+## Wave 11 — smart context-budget + quality-aware routing (2026-05-24)
+
+| # | Feature | LOC | Commit |
+|---|---------|-----|--------|
+| Quality table | `QUALITY_SCORE: Record<Provider, number>` (claude=4 > openai=3 > llama==gemini=2) + `highestQualityAmong()` helper, used by the synth-fallback path. | ~30 | `e584075` |
+| Skip synth on N≤1 valid | /api/ask now counts valid answers BEFORE invoking the synth. N=0 → clear "no synthesis" message. N=1 → pass through the single answer with "_Only X responded — no synthesis_" prefix. Avoids wasteful 1-input synth calls. | ~40 | `e584075` |
+| Auto-upgrade synth to Claude on degradation | When 2+ non-Claude providers are exhausted (via `exhaustedNonClaudeCount()`) AND Claude is among valid answers AND Eco mode off AND user hasn't opted out, override `effectiveSynthesizerId` to `claude-sonnet`. Surfaces via a warning SSE event so the UI shows the upgrade. | ~30 | `e584075` |
+| Per-answer compression before synth | `compressAnswersForSynth()` trims each base answer to `max(1500, min(4000, ctx*0.05/N))` tokens. Head+tail preservation with elision marker. Per-synth-model context windows table (`SYNTH_CONTEXT_WINDOWS`). | ~50 | `e584075` |
+| apex_fanout MCP recursion-guard adjust | When `exhaustedNonClaudeCount() >= 2`, `includeClaude` defaults to true even from inside CC — otherwise a CC user with 3 dead providers would get an empty fan-out. | ~10 | `e584075` |
+| Settings UI "Favor Claude when degraded" toggle | localStorage-backed boolean (default on). Sent on every /api/ask request. Disabled in Eco mode (toggle copy makes the interaction explicit). | ~40 | `e584075` |
+| `pnpm mcp:http` script bug fix | Script was `tsx watch src/mcp/http-server.ts` which bypassed the launcher and never sourced .env.local. Switched to `bin/apex-engine-mcp-http`. | 1 | `e584075` |
+
+## Wave 12a — confidence-calibrated synth (2026-05-24)
+
+| # | Feature | LOC | Commit |
+|---|---------|-----|--------|
+| Synth prompt + parser | `buildSynthPrompt()` instructs the model to end with a `## Confidence` H2 containing an integer 0-100 + 1-sentence justification. `splitDisagreements()` parses it: handles "85 — reason", "72/100", clamps out-of-range scores, co-exists with Notable Disagreements section. New `CONFIDENCE_LOW_THRESHOLD = 60`. | ~80 | `ec8044f` |
+| UI confidence badge + low-conf callout | Compact badge next to synth label (amber<60, neutral 60-79, emerald≥80) with `title` carrying the model's justification. Below the synth body, a louder amber "low-confidence" callout appears when score <60, with the reasoning + "consider re-running" advice. | ~55 | `ec8044f` |
+
+## Wave 12b — Self-Refine on synth (2026-05-24)
+
+| # | Feature | LOC | Commit |
+|---|---------|-----|--------|
+| selfRefinePipeline (3-phase) | When `selfRefine` is on: phase 1 draft → phase 2 critique → phase 3 revise. Phases 1+2 are captured silently into buffers (no tokens streamed to user); only the FINAL revise streams. `buildCritiquePrompt` asks for 5 axes of critique (factual / missing / contradictions / hedging / embarrassment-test), forbids rewriting + new facts. `buildRevisePrompt` instructs the model to preserve Disagreements/Confidence sections, forbid mentioning the revision. | ~155 | `8a9e551` |
+| Toggle + persistence | Settings UI toggle (default off — costs ~2× synth latency, ~3× synth tokens). localStorage key `apex.self-refine`. Sent on every /api/ask request. | ~40 | `8a9e551` |
+| Phase-transition UI signal | `onRefineStart` callback emits a warning SSE event ("Self-Refine: revising the draft after critique…") so the user understands the latency. | ~10 | `8a9e551` |
+
+## Wave 12 polish (post-review)
+
+| # | Feature | LOC | Commit |
+|---|---------|-----|--------|
+| BUG fix — CONFIDENCE_RE | The original regex used `$` anchor + lazy `[\s\S]*?`, swallowing Notable Disagreements when the model emitted `## Confidence` first. Changed to `(?=\n##\s|$)` lookahead; splitDisagreements now SPLICES out the matched range so reverse-order sections work. New regression test. | ~20 | `2449ce0` |
+| RISK fix — Self-Refine cost accounting | Original pipeline reported only the revise phase's tokens, understating RPD pressure ~3×. Now accumulates input+output across all three phases via captureUsage callback, combines with final-phase usage, emits the total on the caller's onUsage. | ~30 | `2449ce0` |
+
+QA + Security review agents auto-dispatched between waves. 200/200 tests; pnpm qa:check + security:check + type-check + build all clean.
+
+## Backlog — Wave 12c / 12d (deferred)
+
+| # | Feature | Why deferred |
+|---|---|---|
+| 12c | Disagreement-driven re-fan-out: when Notable Disagreements has content, optionally fire a focused second fan-out asking only about the disagreement topics. Surface as a "consensus check" panel. | Needs UX design for the second-panel layout + cost-vs-quality tuning. Cross-model consensus exists but not strong enough to rush. ~120 LOC. |
+| 12d | Chain-of-Verification lite: after synth draft, extract factual claims, verify each by re-querying the strongest model. Mark unverified claims with footnotes. | Largest LOC of the four top-ranked features. Needs care around what counts as a "claim" + how to render footnotes without UI noise. ~150 LOC. |
 
 ## Wave 10 — what shipped (2026-05-24)
 

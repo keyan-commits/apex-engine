@@ -66,7 +66,7 @@ prompt → [optional ensemble of roles] → fan-out (parallel) → 4 answers →
 - **SQLite (FTS5)** via `better-sqlite3`
 - **react-syntax-highlighter** (Prism)
 - **unpdf** for PDF text extraction
-- **Vitest** — 21 test files, 177 tests
+- **Vitest** — 24 test files, 200 tests
 - **pnpm** via Node corepack
 
 ## Setup
