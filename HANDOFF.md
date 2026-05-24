@@ -3,9 +3,9 @@
 > Updated after every completed task. Read this first to resume work in a new session — it captures volatile state that `CLAUDE.md` doesn't (CLAUDE.md is stable architecture; this is "where are we right now").
 
 **Last updated:** 2026-05-24
-**Last action:** Wave 8 shipped — five infrastructure features for "operate without restart + always-on QA + always-on security": F2 (auto bug reports with dedup/throttle), F4 (session-aware auto improvement detection, 5 detectors), F1 (apex_self_check drift detection MCP tool), F3 (pnpm qa:check + post-commit hook + apex_qa_review MCP), F5 (pnpm security:check: secret-scan + pnpm audit + apex invariants + apex_security_review MCP). Plus QA + Security review agents found 5 issues — all fixed (context allowlist on /api/feedback, secret-redaction in qa:check output, backslash-aware stack redaction, atomic feedback file writes, cache detector rename + accurate docs) + drift-detection test for REGISTERED_TOOL_NAMES. 134/134 tests pass; type-check + build + qa:check + security:check all clean. Post-commit hook running on every commit.
+**Last action:** Wave 8 shipped + feedback-channel end-to-end round-trip verified. Claude Code restarted, apex_self_check confirms MCP is on `7dc9d44` (7 tools loaded). Three feedback records (1 smoke test + 2 auto-filed bug reports from the QA + Security review agents) flushed via `pnpm feedback:flush` into GitHub Issues [#1](https://github.com/keyan-commits/apex-engine/issues/1)–[#3](https://github.com/keyan-commits/apex-engine/issues/3); all three closed (#2 + #3 with the `7dc9d44` fix-commit reference; #1 as channel-verified). Outbox empty, three JSON records archived under `data/feedback/sent/` with `issueUrl` field set.
 
-**Blocked on:** Nothing. The MCP child still holds pre-Wave-8 code in memory, so the four new MCP tools (`apex_self_check`, `apex_qa_review`, `apex_security_review`, and the F2/F4 auto-feedback emission paths called from server-side code which DO take effect for tool invocations) require a Claude Code restart to become callable. Code on disk is correct.
+**Blocked on:** Nothing. Everything Wave-7 and Wave-8 is live in the running MCP.
 
 ## Wave 8 — what shipped (2026-05-24)
 
@@ -15,9 +15,19 @@
 | F4 | Session-aware auto improvement detection: 5 pattern detectors (solo-mode override, provider-failure cluster, synth-disagreement-with-model, cache-cold-cluster, synth-default-rerank). All signal-level inputs are structural (no prompt text). | ~400 | `4218028` |
 | F1 | `apex_self_check` MCP tool reports server-startup-commit vs current HEAD + working-tree dirty; gives the exact restart command. Never respawns. | ~220 | `17dcf02` |
 | F3 + F5 | `pnpm qa:check` (type-check + tests + opt build), `pnpm security:check` (secret-scan + pnpm audit + apex invariants), `pnpm qa:install-hooks` writes a backgrounded post-commit hook (never blocks the commit), `apex_qa_review` + `apex_security_review` MCP tools. | ~610 | `59cc3f1` |
-| QA/Sec fixes | QA + Security review agents filed bug reports via apex_report (proving the feedback loop); fixes: context allowlist on /api/feedback (MEDIUM security: HTTP body cannot stuff arbitrary fields), secret-redaction in qa:check output (MEDIUM security: env values can't leak), backslash-aware stack redaction for Windows paths, atomic feedback file writes with `wx` flag, cache detector rename + accurate docs, drift-test asserting REGISTERED_TOOL_NAMES matches `server.tool()` calls. | ~150 | `(incoming)` |
+| QA/Sec fixes | QA + Security review agents filed bug reports via apex_report (proving the feedback loop); fixes: context allowlist on /api/feedback (MEDIUM security: HTTP body cannot stuff arbitrary fields), secret-redaction in qa:check output (MEDIUM security: env values can't leak), backslash-aware stack redaction for Windows paths, atomic feedback file writes with `wx` flag, cache detector rename + accurate docs, drift-test asserting REGISTERED_TOOL_NAMES matches `server.tool()` calls. | ~150 | `7dc9d44` |
 
 134/134 tests pass; `pnpm qa:check` + `pnpm security:check` + `pnpm type-check` + `pnpm build` all clean.
+
+### GitHub issues — feedback round-trip verified
+
+| # | Title | Source | Status |
+|---|---|---|---|
+| [#1](https://github.com/keyan-commits/apex-engine/issues/1) | `[praise] Wave 7 post-restart smoke test — apex_report MCP tool` | manual `apex_report` smoke test | CLOSED 2026-05-24 (channel verified) |
+| [#2](https://github.com/keyan-commits/apex-engine/issues/2) | `[bug] F3/F5 MCP tools document auto-feedback on failure but don't emit it; F4 cache-miss detector mislabeled and noisy` | QA review subagent (auto-filed via `apex_report`) | CLOSED 2026-05-24 — fixed in `7dc9d44` |
+| [#3](https://github.com/keyan-commits/apex-engine/issues/3) | `[bug] [auto-security] context spread + QA tail dump can leak unintended payload into feedback records` | Security review subagent (auto-filed via `apex_report`) | CLOSED 2026-05-24 — fixed in `7dc9d44` |
+
+Required GitHub labels (created on first flush): `feedback`, `enhancement`, `question`. `bug` was pre-existing. The flush script tags each issue with `feedback` plus a kind-specific label.
 
 ## Wave 7 — what shipped (2026-05-24)
 
