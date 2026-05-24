@@ -83,6 +83,38 @@ pnpm dev
 # → http://localhost:3000
 ```
 
+### MCP setup — read this if you use Claude Code or Claude Desktop
+
+apex-engine ships an MCP server (7 tools: apex_fanout / apex_synthesize / apex_decompose / apex_report / apex_self_check / apex_qa_review / apex_security_review). **Every apex-engine user should run the setup once.**
+
+**One-shot (recommended):**
+
+```bash
+pnpm setup              # foreground — keeps tsx watch in the terminal
+# or:
+pnpm setup:background   # detaches; pid in data/.mcp-http.pid
+```
+
+That's it. The script (1) registers `apex-engine` with `claude mcp add --transport http`, (2) starts the long-lived HTTP server with `tsx watch`. After this, **code changes hot-reload automatically — no more Claude Code restarts**.
+
+Verify from any CC session by calling `apex_self_check`. Should report 7 tools loaded.
+
+<details>
+<summary>Manual setup (if you prefer)</summary>
+
+```bash
+# HTTP (recommended — hot reload, no CC restarts ever)
+pnpm mcp:install:http       # registers http://127.0.0.1:31001/mcp
+pnpm mcp:http               # long-lived server — keep this terminal open
+
+# stdio (legacy — requires CC restart on every code change)
+pnpm mcp:install
+```
+
+Both launchers shell-source `.env.local` so provider API keys flow through to the MCP child.
+
+</details>
+
 ## Commands
 
 ```bash
@@ -144,31 +176,16 @@ Apex ships as an MCP server. Claude Code, Claude Desktop, or any MCP client can 
 - `apex_decompose({ prompt })` — sub-agent decomposition (planner + mini fan-outs + briefing).
 - `apex_report({ kind, title, description, promptSnippet?, errorText? })` — file a bug or improvement against apex-engine from any Claude Code session. See [feedback channel](#cross-instance-feedback) below.
 
-**Setup — two transport choices:**
+**Quickest path: see [MCP setup](#mcp-setup--read-this-if-you-use-claude-code-or-claude-desktop) above and run `pnpm setup`.** That handles everything.
 
-| Mode | Hot reload on code changes | Process model | Install |
-|---|---|---|---|
-| **HTTP (recommended)** | ✅ Yes — `tsx watch` respawns on file change; CC reconnects on next call. No restart needed. | Long-lived `pnpm mcp:http` in a terminal. | `pnpm mcp:install:http` + `pnpm mcp:http` |
-| stdio | No — CC restart required to pick up code changes. | Per-CC-session child, lifecycle owned by CC. | `pnpm mcp:install` |
+Manual fallback (if you prefer to skip the helper):
 
 ```bash
-# HTTP (recommended after Wave 9)
-pnpm mcp:install:http       # registers http://127.0.0.1:31001/mcp with `claude mcp add`
-pnpm mcp:http               # long-lived server with tsx watch — keep this running
-
-# stdio (default; works without a separate process)
-pnpm mcp:install            # registers the stdio launcher
-```
-
-Both launchers shell-source `.env.local` so provider API keys are available to the MCP child regardless of how the shell was set up.
-
-Manual fallback:
-
-```bash
-# HTTP
+# HTTP (recommended)
 claude mcp add apex-engine --transport http http://127.0.0.1:31001/mcp
+pnpm mcp:http   # keep running in a separate terminal
 
-# stdio
+# stdio (legacy — requires CC restart on code changes)
 claude mcp add apex-engine -- /absolute/path/to/apex-engine/bin/apex-engine-mcp
 ```
 

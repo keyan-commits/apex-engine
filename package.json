@@ -20,6 +20,8 @@
     "mcp:http": "tsx watch src/mcp/http-server.ts",
     "mcp:install": "tsx scripts/mcp-install.ts",
     "mcp:install:http": "tsx scripts/mcp-install.ts --http",
+    "setup": "tsx scripts/setup.ts",
+    "setup:background": "tsx scripts/setup.ts --background",
     "feedback:flush": "tsx scripts/feedback-flush.ts",
     "feedback:watch": "tsx scripts/feedback-watch.ts",
     "qa:check": "tsx scripts/qa-check.ts",

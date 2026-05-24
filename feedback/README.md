@@ -1,5 +1,8 @@
 # apex-engine feedback channel
 
+> **First-time setup:** if you haven't already, run `pnpm setup` in the apex-engine repo. It registers the HTTP MCP server with Claude Code and starts the long-lived hot-reload daemon. Without it, the `apex_report` MCP tool isn't available from other CC sessions, and the convergence story below doesn't work.
+
+
 Every instance of apex-engine (UI, MCP, API, CLI) can record bug reports and
 improvement suggestions. The goal: converge feedback from every instance —
 including ones running outside this Claude Code session, on other machines —

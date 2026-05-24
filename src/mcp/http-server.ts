@@ -1,4 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { registerAllTools, startAutoFlush } from "./register-tools";
@@ -182,6 +184,10 @@ export function buildServer() {
 }
 
 function bootstrap() {
+  // Flag visible to selfCheck() so it knows not to nag about switching
+  // to HTTP — we ARE on HTTP. Set in-process; doesn't leak to children.
+  process.env.APEX_MCP_TRANSPORT = "http";
+
   const port = (() => {
     const raw = process.env.APEX_MCP_PORT;
     if (!raw) return DEFAULT_PORT;
@@ -254,6 +260,17 @@ function bootstrap() {
   });
 }
 
-// `tsx watch` re-imports this module on every restart; running bootstrap
-// at module load is correct.
-bootstrap();
+// Only bootstrap when this file is the entrypoint — NOT when it's
+// imported as a library (e.g. tests pulling in isOriginAllowed).
+// process.argv[1] is the resolved path of the script tsx is running.
+const isMain = (() => {
+  try {
+    return (
+      process.argv[1] !== undefined &&
+      fileURLToPath(import.meta.url) === resolve(process.argv[1])
+    );
+  } catch {
+    return false;
+  }
+})();
+if (isMain) bootstrap();

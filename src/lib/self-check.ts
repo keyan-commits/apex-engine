@@ -91,7 +91,7 @@ export type SelfCheckResult = {
 };
 
 const RESTART_COMMAND =
-  "Quit Claude Code (Cmd+Q on macOS) and reopen it. The apex-engine MCP server respawns automatically on next launch.";
+  "Quit Claude Code (Cmd+Q on macOS) and reopen it. The apex-engine MCP server respawns automatically on next launch. (Tip: switch to HTTP transport with `pnpm setup` to skip CC restarts entirely going forward.)";
 
 export function selfCheck(loadedTools: string[]): SelfCheckResult {
   const currentCommit = tryGitCommit();
@@ -151,6 +151,15 @@ export function formatSelfCheckReport(r: SelfCheckResult): string {
   ];
   if (!r.inSync) {
     lines.push("", `**To pick up the changes:** ${r.restartCommand}`);
+  }
+  // Always remind about the HTTP-transport upgrade — discovery is the
+  // user's #1 ask. Silent when the user is already on HTTP transport
+  // (detected by APEX_MCP_TRANSPORT env var, exported by http-server.ts).
+  if (process.env.APEX_MCP_TRANSPORT !== "http") {
+    lines.push(
+      "",
+      "ℹ Running on stdio transport. To eliminate Claude Code restarts on code changes, run `pnpm setup` once — it switches this clone to HTTP transport with `tsx watch` hot reload.",
+    );
   }
   return lines.join("\n");
 }

@@ -205,20 +205,39 @@ async function main() {
       );
     } else {
       console.log("");
-      console.log(
-        "⚠ HTTP server is NOT currently running. Start it in a long-lived terminal:",
-      );
+      console.log("──────────────────────────────────────────────────────────────");
+      console.log(" NEXT STEP — start the HTTP server in a long-lived terminal:");
       console.log("");
-      console.log("  pnpm mcp:http");
+      console.log("    pnpm mcp:http");
       console.log("");
-      console.log(
-        "Claude Code will pick it up automatically on the next tool call once the server is up.",
-      );
+      console.log(" Keep that terminal open. Claude Code will pick the server");
+      console.log(" up automatically on the next tool call. After that, every");
+      console.log(" code change in apex-engine is hot-reloaded — no more CC");
+      console.log(" restarts.");
+      console.log("──────────────────────────────────────────────────────────────");
     }
   } else {
     console.log(
       "Restart any running Claude Code session so the new MCP child process picks up the tools.",
     );
+    console.log("");
+    console.log("──────────────────────────────────────────────────────────────");
+    console.log(" 💡 TIP — every other apex-engine user is on the HTTP transport.");
+    console.log("");
+    console.log(" The stdio transport you just installed requires a Claude Code");
+    console.log(" RESTART every time apex-engine code changes (new tools, bug");
+    console.log(" fixes, the works). The HTTP transport hot-reloads via");
+    console.log(" `tsx watch` — no restarts at all.");
+    console.log("");
+    console.log(" Switch with two commands:");
+    console.log("");
+    console.log("    pnpm mcp:install:http   # replaces this registration");
+    console.log("    pnpm mcp:http           # long-lived server (separate terminal)");
+    console.log("");
+    console.log(" Or run them together with the one-shot helper:");
+    console.log("");
+    console.log("    pnpm setup");
+    console.log("──────────────────────────────────────────────────────────────");
   }
 }
 
