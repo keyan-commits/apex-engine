@@ -303,6 +303,27 @@ function main(): number {
   if (failed.length === 0) {
     console.log("");
     console.log("✓ all security checks passed");
+    // Sweep any stale [auto-security] issues. Symmetric with the
+    // qa-check post-success cleanup: if security:check passes now,
+    // earlier hook emissions are by definition resolved.
+    try {
+      const r = spawnSync(
+        "pnpm",
+        ["--silent", "feedback:cleanup", "--security-only"],
+        {
+          cwd: REPO_ROOT,
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
+      const out = `${r.stdout ?? ""}${r.stderr ?? ""}`.trim();
+      if (out && !out.startsWith("No stale auto-")) {
+        console.log("");
+        console.log(out);
+      }
+    } catch {
+      // ignore — cleanup is opportunistic
+    }
     return 0;
   }
 

@@ -26,6 +26,7 @@
     "feedback:flush": "tsx scripts/feedback-flush.ts",
     "feedback:watch": "tsx scripts/feedback-watch.ts",
     "feedback:status": "tsx scripts/feedback-status.ts",
+    "feedback:cleanup": "tsx scripts/feedback-cleanup.ts",
     "qa:check": "tsx scripts/qa-check.ts",
     "qa:install-hooks": "tsx scripts/qa-install-hooks.ts",
     "security:check": "tsx scripts/security-check.ts"

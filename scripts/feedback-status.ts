@@ -170,10 +170,27 @@ function suggestActions(pending: number, issues: GhIssue[]): void {
       `• Flush ${pending} pending record(s) to GitHub: \`pnpm feedback:flush\``,
     );
   }
-  const bugs = issues.filter((i) => kindOf(i) === "bug");
-  if (bugs.length > 0) {
+  const autoBugs = issues.filter(
+    (i) =>
+      i.title.includes("[auto-qa]") || i.title.includes("[auto-security]"),
+  );
+  const humanBugs = issues.filter(
+    (i) =>
+      kindOf(i) === "bug" &&
+      !i.title.includes("[auto-qa]") &&
+      !i.title.includes("[auto-security]"),
+  );
+  if (autoBugs.length > 0) {
     lines.push(
-      `• Triage ${bugs.length} open bug(s) — close any that have been fixed in subsequent commits with:`,
+      `• Auto-sweep ${autoBugs.length} stale [auto-*] record(s): \`pnpm feedback:cleanup\``,
+    );
+    lines.push(
+      `  (only closes when the corresponding gate currently passes — run \`pnpm qa:check\` first if unsure)`,
+    );
+  }
+  if (humanBugs.length > 0) {
+    lines.push(
+      `• Triage ${humanBugs.length} human-filed bug(s) — close manually if fixed:`,
     );
     lines.push(`    gh issue close <N> --comment "Fixed in <commit>"`);
   }
@@ -189,7 +206,7 @@ function suggestActions(pending: number, issues: GhIssue[]): void {
   for (const l of lines) console.log(l);
   console.log("");
   console.log(
-    "Tip: schedule `pnpm feedback:status` at the start of every session to catch stale auto-bugs that the post-commit hook emitted during transient gate failures.",
+    "Tip: `pnpm qa:check` + `pnpm security:check` BOTH auto-sweep stale [auto-*] issues on success — run them first if you want a quick cleanup pass.",
   );
 }
 

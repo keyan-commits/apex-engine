@@ -24,6 +24,36 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createReport } from "../src/lib/feedback";
 
+const REPO_ROOT_FOR_CLEANUP = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  "..",
+);
+
+function autoCleanupStaleIssues(): void {
+  // Fire-and-forget: invoke `pnpm feedback:cleanup` after a successful
+  // qa run so any stale [auto-qa] / [auto-security] GitHub issues from
+  // earlier intermediate-commit failures get auto-closed. Failures are
+  // logged but never break the qa-check return code — the gate itself
+  // already passed; cleanup is best-effort grooming.
+  try {
+    const r = spawnSync("pnpm", ["--silent", "feedback:cleanup", "--qa-only"], {
+      cwd: REPO_ROOT_FOR_CLEANUP,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      env: process.env,
+    });
+    const out = `${r.stdout ?? ""}${r.stderr ?? ""}`.trim();
+    // Only surface non-empty output that mentions an actual close —
+    // suppress the "no stale issues" common case so qa-check stays quiet.
+    if (out && !out.startsWith("No stale auto-")) {
+      console.log("");
+      console.log(out);
+    }
+  } catch {
+    // ignore — cleanup is opportunistic
+  }
+}
+
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 type StepResult = {
@@ -144,6 +174,11 @@ function main(): number {
 
   console.log("");
   console.log("✓ all checks passed");
+  // After a clean qa-check run, sweep any stale [auto-qa] issues that
+  // are still open on GitHub from earlier intermediate-commit hook
+  // emissions. Safe by construction: if qa-check passes NOW, anything
+  // it would have emitted in the past is by definition fixed.
+  autoCleanupStaleIssues();
   return 0;
 }
 
