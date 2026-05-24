@@ -30,12 +30,33 @@ export function classifyError(err: unknown): ClassifiedError {
   if (
     status === 429 ||
     /quota.{0,30}exceed|rate.?limit|too many requests/i.test(text)
-  )
+  ) {
+    // Free-tier hints (Wave 14a). When the upstream error mentions
+    // "free tier" / "free_tier_requests", clarify that this is a daily
+    // quota that resets — NOT a billing problem. Confused users on
+    // Google AI Studio's free tier interpreted "check billing details"
+    // (Google's standard error language) as "you need to pay", when
+    // really the free tier just resets at UTC midnight.
+    const freeTier = /free[_ ]?tier/i.test(text);
+    const provider = /generativelanguage\.googleapis|gemini/i.test(text)
+      ? "gemini"
+      : /groq/i.test(text)
+        ? "groq"
+        : /github models|models\.github\.ai/i.test(text)
+          ? "github-models"
+          : null;
+    let message = "Rate limit hit. Try again later";
+    if (freeTier && provider === "gemini") {
+      message = "Gemini free-tier daily quota hit — resets at UTC midnight (no billing required)";
+    } else if (freeTier) {
+      message = "Free-tier rate limit hit — quota resets daily (no billing required)";
+    }
     return {
       kind: "rate-limited",
-      message: "Rate limit hit. Try again later",
+      message,
       ...(retryAfterMs ? { retryAfterMs } : {}),
     };
+  }
   if (/timed? ?out|etimedout/i.test(text))
     return { kind: "timeout", message: "Request timed out" };
   if (status !== null && status >= 500)

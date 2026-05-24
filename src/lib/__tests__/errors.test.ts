@@ -75,4 +75,34 @@ describe("classifyError", () => {
       "Rate limit hit. Try again later",
     );
   });
+
+  describe("Wave 14a — free-tier hint clarifies it's NOT a billing problem", () => {
+    it("recognizes Gemini free-tier 429 and tells the user it resets at UTC midnight", () => {
+      const r = classifyError(
+        new Error(
+          "[GoogleGenerativeAI Error]: Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 0",
+        ),
+      );
+      expect(r.kind).toBe("rate-limited");
+      expect(r.message).toContain("free-tier");
+      expect(r.message).toContain("UTC midnight");
+      expect(r.message).toContain("no billing required");
+    });
+
+    it("recognizes generic free-tier 429 without provider attribution", () => {
+      const r = classifyError(
+        new Error("Free tier quota exceeded. Please retry"),
+      );
+      expect(r.message).toContain("Free-tier");
+      expect(r.message).toContain("no billing required");
+    });
+
+    it("falls back to the plain rate-limit message when free-tier isn't mentioned", () => {
+      const r = classifyError({
+        status: 429,
+        message: "Too many requests",
+      });
+      expect(r.message).toBe("Rate limit hit. Try again later");
+    });
+  });
 });
