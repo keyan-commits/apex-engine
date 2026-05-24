@@ -15,6 +15,7 @@ import {
   nodesToBriefing,
 } from "@/lib/subagents";
 import { synthesize, type FanOutAnswer } from "@/lib/synthesize";
+import { webSearch, formatWebSearchAsMarkdown } from "@/lib/web-search";
 
 // Shared MCP tool registration — called by BOTH the stdio entry point
 // (src/mcp/server.ts) and the HTTP entry point (src/mcp/http-server.ts).
@@ -35,6 +36,7 @@ export const REGISTERED_TOOL_NAMES = [
   "apex_code_review",
   "apex_security_review",
   "apex_history_search",
+  "apex_web_search",
 ];
 
 const CODE_REVIEW_MAX_CHARS = 8_000;
@@ -697,6 +699,71 @@ export function registerAllTools(server: McpServer): void {
               `${synthSection}\n\n---\n\n# Individual Reviewer Responses\n\n${formatAnswers(answers)}`,
             ),
           },
+        ],
+      };
+    },
+  );
+
+  server.tool(
+    "apex_web_search",
+    "**Web search for grounding current-data queries.** Calls Tavily (LLM-optimized snippets, primary) with Brave (raw snippets, larger free tier) as fallback. Returns up to N web results with title, URL, snippet, and publish date. Use this whenever the user's question requires data from after model training cutoff: current product catalogs, recent news, today's pricing, latest releases. Pair with apex_synthesize via the `context` arg — pass the formatted results as context — to get a current-grounded MoA answer. apex-engine's own fan-out doesn't auto-call this (yet — coming in Wave 17b); call it explicitly when you detect a stale-knowledge gap.\n\nProvider keys are env-gated: at least one of TAVILY_API_KEY / BRAVE_API_KEY must be set in apex-engine's .env.local. Returns a clear error if neither key is configured.",
+    {
+      query: z
+        .string()
+        .min(1)
+        .describe(
+          "Search query. Phrase like a search engine input, not a question. Examples: 'Apexel microscope products 2026', 'iPhone 17 Pro Max release date', 'TanStack Query v6 breaking changes'.",
+        ),
+      maxResults: z
+        .number()
+        .int()
+        .min(1)
+        .max(20)
+        .default(8)
+        .describe("Number of results to return (1-20). Default 8."),
+      freshnessDays: z
+        .number()
+        .int()
+        .min(1)
+        .optional()
+        .describe(
+          "If set, restrict results to pages published in the last N days. Tavily uses this as a `days` filter; Brave maps to its bucketed `freshness` param (pd/pw/pm/py). Omit for no time filter.",
+        ),
+      provider: z
+        .enum(["auto", "tavily", "brave"])
+        .default("auto")
+        .describe(
+          "Force a specific provider. 'auto' (default) = Tavily primary, Brave fallback. Set 'tavily' or 'brave' to bypass auto-selection.",
+        ),
+    },
+    async ({ query, maxResults, freshnessDays, provider }) => {
+      const opts = {
+        maxResults,
+        ...(freshnessDays !== undefined ? { freshnessDays } : {}),
+      };
+      let result;
+      if (provider === "tavily") {
+        const savedBrave = process.env.BRAVE_API_KEY;
+        delete process.env.BRAVE_API_KEY;
+        try {
+          result = await webSearch(query, opts);
+        } finally {
+          if (savedBrave) process.env.BRAVE_API_KEY = savedBrave;
+        }
+      } else if (provider === "brave") {
+        const savedTavily = process.env.TAVILY_API_KEY;
+        delete process.env.TAVILY_API_KEY;
+        try {
+          result = await webSearch(query, opts);
+        } finally {
+          if (savedTavily) process.env.TAVILY_API_KEY = savedTavily;
+        }
+      } else {
+        result = await webSearch(query, opts);
+      }
+      return {
+        content: [
+          { type: "text", text: withFlushNotice(formatWebSearchAsMarkdown(result)) },
         ],
       };
     },
