@@ -18,6 +18,7 @@
     "test:ui": "vitest --ui",
     "mcp": "tsx src/mcp/server.ts",
     "mcp:http": "bin/apex-engine-mcp-http",
+    "mcp:reload": "touch src/mcp/http-server.ts && echo '✓ touched src/mcp/http-server.ts — tsx watch should respawn within ~100ms; next MCP tool call will pick up the new code.'",
     "mcp:install": "tsx scripts/mcp-install.ts",
     "mcp:install:http": "tsx scripts/mcp-install.ts --http",
     "setup": "tsx scripts/setup.ts",
