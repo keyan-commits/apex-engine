@@ -1,5 +1,6 @@
 import { saveAttachment, type AttachmentMeta } from "@/lib/attachments";
 import { answersSignature, cacheGet, cacheKey, cachePut } from "@/lib/cache";
+import { classify } from "@/lib/classify";
 import { estimateCost } from "@/lib/cost";
 import { fanOut } from "@/lib/engine";
 import { userFacingMessage } from "@/lib/errors";
@@ -155,6 +156,15 @@ export async function POST(req: Request) {
   if (body.ecoMode) enabled.claude = false;
   const effectiveSynthesizerId = body.ecoMode ? "gpt-oss-20b" : body.synthesizerId;
 
+  // Classify once, up front (sync, no LLM call). B2 (solo mode) and future
+  // B5 (escalation) read this. We always classify the *user-typed* prompt,
+  // not the parent-context-augmented prompt — context shouldn't move a
+  // simple follow-up into "complex".
+  const classification = classify(body.prompt);
+  log.info(
+    `classified prompt as ${classification.complexity} (ambiguity=${classification.ambiguity}) signals=${classification.signals.join(",")}`,
+  );
+
   // Thread context: prepend prior Q+best-answer chain.
   const parentContext = buildParentContext(body.parentId);
   const promptWithContext = parentContext
@@ -246,6 +256,7 @@ export async function POST(req: Request) {
               roles,
               attachments: body.attachments,
               enabled,
+              classification,
             });
         const answerMap = {} as Record<Provider, HistoryAnswer>;
         const providerStart: Partial<Record<Provider, number>> = {};

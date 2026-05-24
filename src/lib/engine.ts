@@ -5,6 +5,7 @@ import { groq } from "@ai-sdk/groq";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { AttachmentMeta } from "./attachments";
 import { cacheGet, cachePut } from "./cache";
+import type { Classification } from "./classify";
 import {
   buildAiSdkContent,
   buildClaudeContent,
@@ -36,6 +37,11 @@ export type FanOutOptions = {
   roles?: Partial<Record<Provider, RoleId>>;
   attachments?: AttachmentMeta[];
   enabled?: Partial<Record<Provider, boolean>>;
+  // Optional prompt classification; downstream routing (B5 escalation, B7
+  // learned router) consults it. fanOut doesn't currently mutate behavior
+  // based on this — it's pass-through so B2/B5 can compose without
+  // re-classifying.
+  classification?: Classification;
 };
 
 export type StreamUsage = {

@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__apex-engine__apex_fanout",
+      "Bash(pnpm test:run)",
+      "Bash(pnpm type-check *)"
+    ]
+  }
+}
