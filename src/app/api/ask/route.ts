@@ -5,6 +5,14 @@ import { classify } from "@/lib/classify";
 import { estimateCost } from "@/lib/cost";
 import { fanOut } from "@/lib/engine";
 import { userFacingMessage } from "@/lib/errors";
+import {
+  noteCacheMiss,
+  noteDisagreementMentioning,
+  noteProviderFailure,
+  noteSoloOverride,
+  noteSynthSwitch,
+} from "@/lib/improvements";
+import { DEFAULT_SYNTHESIZER_ID } from "@/lib/synthesizer-options";
 import { getHistoryEntry, saveHistory, type HistoryAnswer } from "@/lib/history";
 import { logger } from "@/lib/log";
 import { PROVIDERS, type Provider } from "@/lib/providers";
@@ -127,6 +135,28 @@ async function parseRequest(req: Request): Promise<{ ok: true; body: ParsedBody 
   };
 }
 
+function detectDisagreementMentions(synthText: string): void {
+  // Cheap scan: find the optional ## Notable Disagreements section, then
+  // look for provider labels inside it. We avoid importing the heavier
+  // markdown parser here.
+  const re = /\n##\s+Notable\s+Disagreements\s*\n([\s\S]*)$/i;
+  const m = re.exec(synthText);
+  if (!m) return;
+  const section = m[1];
+  // PROVIDER_LABELS values are "Claude" / "GPT" / "Llama" / "Gemini".
+  // Mention thresholding lives in F4; we just feed each match.
+  const pairs: Array<[string, "claude" | "openai" | "llama" | "gemini"]> = [
+    ["Claude", "claude"],
+    ["GPT", "openai"],
+    ["Llama", "llama"],
+    ["Gemini", "gemini"],
+  ];
+  for (const [label, prov] of pairs) {
+    const wordBoundary = new RegExp(`\\b${label}\\b`);
+    if (wordBoundary.test(section)) noteDisagreementMentioning(prov);
+  }
+}
+
 function errorCodeOf(err: unknown): string {
   if (!err || typeof err !== "object") return "unknown";
   const e = err as {
@@ -212,6 +242,21 @@ export async function POST(req: Request) {
     // Don't engage solo on the sub-agent path — Decompose is explicitly
     // opting into a richer flow.
     body.ensembleId !== "decompose";
+
+  // F4 signal: the user explicitly overrode solo mode on a "simple"
+  // classification. The detector aggregates these across the session.
+  if (body.forceFullFanout && classification.complexity === "simple") {
+    noteSoloOverride("simple");
+  }
+  // F4 signal: the user is running a non-default synth. The detector
+  // emits a rerank suggestion after a sustained preference.
+  if (
+    body.synthesizerEnabled &&
+    body.synthesizerId &&
+    body.synthesizerId !== DEFAULT_SYNTHESIZER_ID
+  ) {
+    noteSynthSwitch(body.synthesizerId);
+  }
   if (soloMode) {
     enabled.claude = false;
     enabled.openai = false;
@@ -413,13 +458,14 @@ export async function POST(req: Request) {
               const message = userFacingMessage(err);
               acc.error = message;
               send({ type: "error", provider: item.provider, message });
+              const code = errorCodeOf(err);
               recordAutoBug({
                 kind: "bug",
                 signature: {
                   operation: "fanout.stream",
                   provider: item.provider,
                   model: item.model,
-                  errorCode: errorCodeOf(err),
+                  errorCode: code,
                 },
                 context: {
                   latencyMs,
@@ -428,6 +474,7 @@ export async function POST(req: Request) {
                   stackHeadLine: stackHeadOf(err),
                 },
               });
+              noteProviderFailure(item.provider, code);
             }
             // Drain token usage now that the stream has settled. Resolved in
             // engine.streamFor; null when the provider omits usage (Claude
@@ -491,6 +538,10 @@ export async function POST(req: Request) {
             send({ type: "synth-delta", text: cachedSynth });
             send({ type: "synth-done", latencyMs: 0 });
           } else {
+            // First time we've seen this synth key — a miss. Feed the
+            // F4 cache-miss-thrash detector. Only the hashed key is
+            // passed; prompt text is never referenced.
+            noteCacheMiss(synthKey);
             // Callback-trapped value — wrapped in a ref so TS narrows
             // `current` correctly inside the `if` below.
             const synthUsageRef: {
@@ -509,7 +560,13 @@ export async function POST(req: Request) {
                 synthText += chunk;
                 send({ type: "synth-delta", text: chunk });
               }
-              if (synthText) cachePut(synthKey, synthText);
+              if (synthText) {
+                cachePut(synthKey, synthText);
+                // After successful synth, scan the rendered text for a
+                // "Notable Disagreements" section and feed F4 detector 3
+                // with each provider name found.
+                detectDisagreementMentions(synthText);
+              }
               send({ type: "synth-done", latencyMs: Date.now() - synthStart });
             } catch (err) {
               synthError = userFacingMessage(err);
