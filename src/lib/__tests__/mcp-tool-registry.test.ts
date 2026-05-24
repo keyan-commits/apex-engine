@@ -3,22 +3,22 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-// Regression test for QA review RISK: REGISTERED_TOOL_NAMES in
-// src/mcp/server.ts is hand-maintained. It's used by apex_self_check
-// to surface the loaded tool list. Future tool additions will silently
-// desync the array from the actual registrations unless this test
-// catches the drift.
+// Regression test for QA review RISK: REGISTERED_TOOL_NAMES (exported
+// from src/mcp/register-tools.ts after the Wave 9 HTTP refactor) is
+// hand-maintained. It's used by apex_self_check to surface the loaded
+// tool list. Future tool additions will silently desync the array
+// from the actual registrations unless this test catches the drift.
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
-const SERVER_PATH = join(REPO_ROOT, "src/mcp/server.ts");
+const REGISTER_PATH = join(REPO_ROOT, "src/mcp/register-tools.ts");
 
 describe("MCP tool registry stays in sync", () => {
   it("REGISTERED_TOOL_NAMES.length matches the number of server.tool() calls", () => {
-    const source = readFileSync(SERVER_PATH, "utf8");
+    const source = readFileSync(REGISTER_PATH, "utf8");
 
     // Extract the REGISTERED_TOOL_NAMES array members.
     const arrayMatch = source.match(
-      /const REGISTERED_TOOL_NAMES\s*=\s*\[([\s\S]*?)\]/,
+      /REGISTERED_TOOL_NAMES\s*=\s*\[([\s\S]*?)\]/,
     );
     expect(arrayMatch, "REGISTERED_TOOL_NAMES array not found").toBeTruthy();
     const arrayBody = arrayMatch![1];

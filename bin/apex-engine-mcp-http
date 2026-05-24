@@ -1,0 +1,19 @@
+#!/bin/sh
+# Streamable-HTTP MCP launcher. Uses `tsx watch` so the server respawns
+# automatically whenever any imported source file changes — Claude Code
+# reconnects to the same HTTP port on its next tool call and picks up the
+# new code without a CC restart.
+#
+# Keep this in foreground (Ctrl-C to stop, or send SIGTERM). Wrap in
+# `nohup` / launchd / screen if you want it detached.
+#
+# Port defaults to 31001 (override via APEX_MCP_PORT).
+# Disable auto-feedback-flush with APEX_NO_AUTO_FLUSH=1.
+set -e
+DIR="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$DIR"
+exec "$DIR/node_modules/.bin/tsx" \
+  watch \
+  --env-file-if-exists="$DIR/.env.local" \
+  "$DIR/src/mcp/http-server.ts" \
+  "$@"
