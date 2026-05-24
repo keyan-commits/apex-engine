@@ -3,24 +3,25 @@
 > Updated after every completed task. Read this first to resume work in a new session — it captures volatile state that `CLAUDE.md` doesn't (CLAUDE.md is stable architecture; this is "where are we right now").
 
 **Last updated:** 2026-05-24
-**Last action:** Shipped Wave 7 — five planned features (apex_decompose bug fix, A7 self-consistency, B3 cost tracking, B1 classifier, B2 solo mode, A1 rewriter) plus two ad-hoc additions (cross-instance feedback channel, `pnpm mcp:install` helper). 107/107 tests pass; type-check + build clean. Six commits pushed to `origin/main`.
+**Last action:** Wave 7 fully shipped — five planned features (apex_decompose bug fix, A7 self-consistency, B3 cost tracking, B1 classifier, B2 solo mode, A1 rewriter), two ad-hoc additions (cross-instance feedback channel, `pnpm mcp:install` helper), and a QA polish pass that fixed two issues a test agent surfaced. 108/108 tests pass; `pnpm type-check` + `pnpm build` clean. Eight commits (`f6eaf5f`..`3f893e5`) pushed to `origin/main`. All MDs (CLAUDE.MD / HANDOFF.md / README.md / feedback/README.md) refreshed.
 
-**Blocked on:** Nothing actively. The locally-running MCP child process still holds Wave 6's code in memory, so `apex_decompose` / `apex_report` are only callable from this CC session after a Claude Code restart.
+**Blocked on:** Nothing. The locally-running MCP child process still holds the pre-Wave-7 code in memory, so `apex_decompose` (fixed schema) and the new `apex_report` tool only become callable after a Claude Code restart. Code on disk is correct.
 
 ## Wave 7 — what shipped (2026-05-24)
 
 | # | Feature | LOC | Commit |
 |---|---------|-----|--------|
-| 0 | apex_decompose bug fix (Groq strict-JSON schema rejected `.default([])`) | ~10 | f6eaf5f |
-| 1 | A7 self-consistency cross-check in synth (`## Notable Disagreements` section + amber callout) | ~80 | f6eaf5f |
-| 2 | B3 persisted cost tracking (real paid-tier rates, history columns, `result.usage` drained from streams) | ~250 | f6eaf5f |
-| 3 | B1 heuristic complexity classifier (sync, no LLM call, strong-verb vs soft-verb scoring) | ~340 | 8323409 |
-| 4 | B2 per-query solo mode (Llama only on simple prompts; "Run all 4" override) | ~125 | 6c047d0 |
-| 5 | A1 pre-flight prompt rewriter (gated by ambiguity ≥ 0.4; always-show-diff UX) | ~260 | 1a1737d |
-| 6 | Cross-instance feedback channel (UI button, `apex_report` MCP tool, `/api/feedback`, `pnpm feedback:flush`) | ~500 | (incoming) |
-| 7 | `pnpm mcp:install` one-shot installer (registers this clone's MCP launcher with Claude Code) | ~110 | (incoming) |
+| 0 | apex_decompose bug fix (Groq strict-JSON schema rejected `.default([])`) | ~10 | `f6eaf5f` |
+| 1 | A7 self-consistency cross-check in synth (`## Notable Disagreements` section + amber callout) | ~80 | `f6eaf5f` |
+| 2 | B3 persisted cost tracking (real paid-tier rates, history columns, `result.usage` drained from streams) | ~250 | `f6eaf5f` |
+| 3 | B1 heuristic complexity classifier (sync, no LLM call, strong-verb vs soft-verb scoring) | ~340 | `8323409` |
+| 4 | B2 per-query solo mode (Llama only on simple prompts; "Run all 4" override) | ~125 | `6c047d0` |
+| 5 | A1 pre-flight prompt rewriter (gated by ambiguity ≥ 0.4; always-show-diff UX) | ~260 | `1a1737d` |
+| 6 | Cross-instance feedback channel (UI button, `apex_report` MCP tool, `/api/feedback`, `pnpm feedback:flush`) | ~500 | `6ba2073` |
+| 7 | `pnpm mcp:install` one-shot installer (registers this clone's MCP launcher with Claude Code) | ~110 | `6ba2073` |
+| 8 | QA polish: fix start-of-doc disagreement regex; fix `process.cwd()` → `import.meta.url` in feedback module; FanOutItem.usage contract JSDoc | ~30 | `3f893e5` |
 
-107/107 tests pass; type-check + build clean.
+108/108 tests pass; type-check + build clean.
 
 ### Backlog (subsequent waves, full feature list from prior research)
 
@@ -170,13 +171,15 @@ apex-engine/
     │   ├── SynthesizerPanel.tsx          (Continue thread, Re-synth, copy, latency)
     │   └── TemplatePicker.tsx
     ├── lib/
-    │   ├── __tests__/                    (10 test files, 84 tests)
+    │   ├── __tests__/                    (13 test files, 108 tests)
     │   ├── attachments.ts                (magic-number, EXIF, sha256-content-addressed)
     │   ├── cache.ts                      (SQLite, sha256-keyed, TTL)
-    │   ├── cost.ts                       (per-model rates + estimate)
-    │   ├── engine.ts                     (fanOut + multimodal + describe-pass + abort + timeout)
+    │   ├── classify.ts                   (B1 sync complexity + ambiguity heuristic)
+    │   ├── cost.ts                       (paid-tier rates + estimate; B3 foundation)
+    │   ├── engine.ts                     (fanOut + multimodal + describe-pass + abort + timeout + usage drain)
     │   ├── errors.ts                     (classifyError + Retry-After)
-    │   ├── history.ts                    (FTS5 + 11 columns + filters + tags + star)
+    │   ├── feedback.ts                   (cross-instance report inbox; resolves repo root via import.meta.url)
+    │   ├── history.ts                    (FTS5 + 14 columns inc. token/cost totals + filters + tags + star)
     │   ├── log.ts                        (level-aware + persists warn/error)
     │   ├── logs.ts                       (telemetry table)
     │   ├── multimodal.ts                 (per-provider message builders + unpdf)
@@ -184,17 +187,19 @@ apex-engine/
     │   ├── providers.ts
     │   ├── quota.ts                      (tier downgrade + UTC reset)
     │   ├── retry.ts                      (exp backoff + 4xx-aware)
+    │   ├── rewriter.ts                   (A1 Groq gpt-oss-20b rewriter; ambiguity-gated)
     │   ├── roles.ts                      (20 roles, 9 ensembles)
-    │   ├── sse.ts                        (typed event union + encode + parse)
-    │   ├── subagents.ts                  (decompose + DAG + executor + briefing)
+    │   ├── sse.ts                        (typed event union + encode + parse; "classified" event added)
+    │   ├── subagents.ts                  (decompose + DAG + executor + briefing; depends_on now required)
+    │   ├── synth-format.ts               (client-safe splitDisagreements + DISAGREEMENT_HEADING)
     │   ├── synth-styles.ts               (5 styles)
-    │   ├── synthesize.ts                 (role-aware, style-aware, signal-aware)
+    │   ├── synthesize.ts                 (role-aware, style-aware, signal-aware, onUsage callback)
     │   ├── synthesizer-options.ts
     │   ├── templates.ts
     │   ├── tiers.ts
     │   └── tokens.ts
     └── mcp/
-        └── server.ts                     (apex_fanout + apex_synthesize + apex_decompose)
+        └── server.ts                     (apex_fanout + apex_synthesize + apex_decompose + apex_report)
 ```
 
 ## Commands
