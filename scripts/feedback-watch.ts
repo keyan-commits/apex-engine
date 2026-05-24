@@ -13,7 +13,16 @@
 // itself — wrap it in `nohup`, `launchd`, `systemd`, or `screen` if you
 // want it detached.
 
-import { existsSync, readFileSync, unlinkSync, writeFileSync, mkdirSync } from "node:fs";
+import {
+  closeSync,
+  constants as fsConstants,
+  existsSync,
+  openSync,
+  readFileSync,
+  unlinkSync,
+  writeSync,
+  mkdirSync,
+} from "node:fs";
 import { join } from "node:path";
 import { feedbackPaths } from "../src/lib/feedback";
 import { flushAll } from "../src/lib/feedback-flush";
@@ -54,10 +63,40 @@ function acquirePidFile(): boolean {
         return false;
       }
     } catch {
-      // Unreadable pid file — overwrite it.
+      // Unreadable pid file — fall through to remove + recreate below.
+    }
+    // The stale-pid path. Remove the existing file BEFORE the
+    // O_CREAT | O_EXCL write so the next openSync doesn't EEXIST.
+    try {
+      unlinkSync(PID_FILE);
+    } catch {
+      // already gone — fine
     }
   }
-  writeFileSync(PID_FILE, String(process.pid));
+  // O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW: refuse to follow symlinks and
+  // refuse to overwrite an existing file. Security review H2: the
+  // previous writeFileSync(PID_FILE, ...) followed symlinks and could
+  // clobber an attacker-planted target.
+  try {
+    const fd = openSync(
+      PID_FILE,
+      fsConstants.O_WRONLY |
+        fsConstants.O_CREAT |
+        fsConstants.O_EXCL |
+        fsConstants.O_NOFOLLOW,
+      0o600,
+    );
+    try {
+      writeSync(fd, String(process.pid));
+    } finally {
+      closeSync(fd);
+    }
+  } catch (err) {
+    console.error(
+      `Failed to write PID file at ${PID_FILE}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return false;
+  }
   return true;
 }
 

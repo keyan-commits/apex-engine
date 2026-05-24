@@ -27,6 +27,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execSync } from "node:child_process";
 import { createReport } from "../src/lib/feedback";
+import { SECRET_PATTERNS as SHARED_SECRET_PATTERNS } from "../src/lib/secret-patterns";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -39,19 +40,29 @@ type CheckResult = {
   severity?: Severity;
 };
 
-const SECRET_PATTERNS: Array<[RegExp, string]> = [
-  [/sk-[a-zA-Z0-9]{20,}/, "OpenAI-style secret key"],
-  [/ghp_[a-zA-Z0-9]{30,}/, "GitHub personal access token"],
-  [/gho_[a-zA-Z0-9]{30,}/, "GitHub OAuth token"],
-  [/AKIA[0-9A-Z]{16}/, "AWS access key id"],
-  [/AIzaSy[a-zA-Z0-9_-]{30,}/, "Google API key"],
-  [/gsk_[a-zA-Z0-9]{40,}/, "Groq API key"],
-  [/-----BEGIN [A-Z ]*PRIVATE KEY-----/, "Private key block"],
-];
+// Pattern tuples for this script: we use a non-global version of each
+// shared regex (the shared list uses /g for replace() callers, but
+// here a single boolean .test() is enough). Recompiled once at module
+// load.
+const SECRET_PATTERNS: Array<[RegExp, string]> = SHARED_SECRET_PATTERNS.map(
+  ({ label, pattern }) =>
+    [
+      new RegExp(pattern.source, pattern.flags.replace("g", "")),
+      label,
+    ] as [RegExp, string],
+);
 
+// Files that intentionally describe or test the secret patterns. They
+// MUST be allowlisted or `pnpm security:check` will fail every commit,
+// trigger the post-commit hook's auto-bug record, and the auto-flush
+// will spam GitHub Issues. (This was QA review BUG-1 / Sec review C1.)
 const SECRET_SCAN_ALLOWLIST = new Set([
   ".env.example",
   "scripts/security-check.ts",
+  "src/lib/secret-patterns.ts",
+  "src/lib/feedback-flush.ts",
+  "src/lib/__tests__/feedback-flush.test.ts",
+  "src/lib/__tests__/secret-patterns.test.ts",
   "README.md",
   "HANDOFF.md",
   "CLAUDE.MD",
@@ -85,6 +96,9 @@ function secretScan(): CheckResult {
       continue; // binary or unreadable
     }
     for (const [pattern, label] of SECRET_PATTERNS) {
+      // Reset lastIndex defensively in case the shared pattern still
+      // carried the /g flag through New RegExp construction.
+      pattern.lastIndex = 0;
       if (pattern.test(content)) {
         findings.push(`${rel}: ${label}`);
       }

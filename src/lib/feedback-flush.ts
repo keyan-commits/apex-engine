@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, unlinkSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import {
   listPendingReports,
@@ -8,6 +8,7 @@ import {
   type FeedbackRecord,
 } from "./feedback";
 import { logger } from "./log";
+import { redactSecrets } from "./secret-patterns";
 
 // Shared flush logic, callable from:
 //   - scripts/feedback-flush.ts   (one-shot CLI)
@@ -35,25 +36,10 @@ const BACKOFF_MIN_MS = 60_000;       // 1 minute
 const BACKOFF_MAX_MS = 60 * 60_000;  // 1 hour
 const MAX_FAILED_LOGS = 3;           // after N consecutive errors, stop logging until next success
 
-// Redact common credential shapes from any text we send to GitHub. Mirrors
-// scripts/security-check.ts SECRET_PATTERNS — kept in sync manually. Error
-// messages from upstream LLM SDKs occasionally include bearer tokens; we
-// strip them before the body lands on a public Issue.
-const SECRET_REDACTION_PATTERNS: RegExp[] = [
-  /sk-[a-zA-Z0-9]{20,}/g,
-  /ghp_[a-zA-Z0-9]{30,}/g,
-  /gho_[a-zA-Z0-9]{30,}/g,
-  /AKIA[0-9A-Z]{16}/g,
-  /AIzaSy[a-zA-Z0-9_-]{30,}/g,
-  /gsk_[a-zA-Z0-9]{40,}/g,
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
-];
-
-function redactSecrets(text: string): string {
-  let out = text;
-  for (const p of SECRET_REDACTION_PATTERNS) out = out.replace(p, "<REDACTED-SECRET>");
-  return out;
-}
+// redactSecrets is imported from src/lib/secret-patterns — the single
+// source of truth shared with scripts/security-check.ts and
+// scripts/qa-check.ts. Adding a new credential shape there propagates
+// here automatically.
 
 export type FlushStats = {
   attempted: number;
@@ -61,7 +47,18 @@ export type FlushStats = {
   skipped: number; // gh unavailable / unauthed / lock held / disabled
   failed: number;
   durationMs: number;
-  reason?: "ok" | "gh-missing" | "gh-unauthed" | "lock-held" | "disabled" | "empty";
+  // "backoff" = we're inside the exponential-backoff window after a
+  // recent failure; "lock-held" = another process holds the
+  // .flush.lock file. They were conflated in v1 and QA flagged it.
+  reason?:
+    | "ok"
+    | "gh-missing"
+    | "gh-unauthed"
+    | "gh-error"
+    | "lock-held"
+    | "backoff"
+    | "disabled"
+    | "empty";
 };
 
 // Backoff state — process-lifetime, in-memory.
@@ -136,35 +133,47 @@ export function buildIssueBody(rec: FeedbackRecord): { title: string; body: stri
 
 function acquireLock(): boolean {
   // Lockfile under the same dir as outbox/sent. Created with O_EXCL so
-  // two simultaneous processes can't both pass.
+  // two simultaneous processes can't both pass. QA review RISK-4:
+  // bounded to a single reclaim retry (not recursive) so a hot race
+  // can't loop forever.
   const { outbox } = feedbackPaths();
   const lockDir = join(outbox, "..");
   try {
     mkdirSync(lockDir, { recursive: true });
   } catch {}
   const lockPath = join(lockDir, ".flush.lock");
-  try {
-    writeFileSync(
-      lockPath,
-      JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }),
-      { flag: "wx", encoding: "utf8" },
-    );
-    return true;
-  } catch {
-    // Lock exists. If it's stale (>5 min old), reclaim.
+  const tryAcquire = (): boolean => {
     try {
-      const stat = readFileSync(lockPath, "utf8");
-      const parsed = JSON.parse(stat) as { pid?: number; startedAt?: string };
-      if (parsed.startedAt) {
-        const age = Date.now() - Date.parse(parsed.startedAt);
-        if (age > 5 * 60_000) {
-          unlinkSync(lockPath);
-          return acquireLock();
-        }
+      writeFileSync(
+        lockPath,
+        JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }),
+        { flag: "wx", encoding: "utf8" },
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  if (tryAcquire()) return true;
+  // Lock exists. If it's stale (>5 min old), reclaim ONCE.
+  try {
+    const stat = readFileSync(lockPath, "utf8");
+    const parsed = JSON.parse(stat) as { pid?: number; startedAt?: string };
+    if (parsed.startedAt) {
+      const age = Date.now() - Date.parse(parsed.startedAt);
+      if (age > 5 * 60_000) {
+        unlinkSync(lockPath);
+        return tryAcquire();
       }
+    }
+  } catch {
+    // Lockfile is malformed; treat as stale and try once more.
+    try {
+      unlinkSync(lockPath);
     } catch {}
-    return false;
+    return tryAcquire();
   }
+  return false;
 }
 
 function releaseLock(): void {
@@ -265,7 +274,7 @@ export function flushAll(opts: FlushAllOptions = {}): FlushStats {
   }
 
   if (!opts.ignoreBackoff && inBackoffWindow()) {
-    stats.reason = "lock-held"; // reused — really "backoff held"
+    stats.reason = "backoff";
     stats.durationMs = Date.now() - start;
     return stats;
   }
@@ -323,9 +332,9 @@ export function flushAll(opts: FlushAllOptions = {}): FlushStats {
         break;
       }
     }
-    stats.reason = "ok";
+    stats.reason = stats.failed > 0 ? "gh-error" : "ok";
     if (stats.failed === 0) noteSuccess();
-    else noteFailure("ok", `${stats.failed} record(s) failed gh issue create`);
+    else noteFailure("gh-error", `${stats.failed} record(s) failed gh issue create`);
   } finally {
     releaseLock();
   }
