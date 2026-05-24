@@ -37,3 +37,6 @@ Thumbs.db
 *.db-wal
 *.db-shm
 data/
+
+# Local Claude settings backups
+.claude/settings.local.json.bak.*
