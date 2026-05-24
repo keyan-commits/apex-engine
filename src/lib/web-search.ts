@@ -1,7 +1,14 @@
 // Wave 17a — web grounding. Tavily primary (LLM-optimized snippets) +
-// Brave fallback (raw snippets, larger free tier). Both have free tiers
-// that cover single-user use; both are env-gated (the tool reports a
-// friendly error if neither key is set).
+// Brave fallback (raw snippets, ~$5/mo of complimentary credit). Both
+// offer roughly 1000 free queries/month at single-user scale; both are
+// env-gated (the tool reports a friendly error if neither key is set).
+//
+// Pricing as of 2026-05-24:
+//   - Tavily: 1000 API credits/mo, NO credit card required.
+//   - Brave: $5/mo of complimentary credit auto-applied; at $5 per 1000
+//     queries on the Search plan, that's effectively ~1000 free
+//     queries/mo. A credit card is required at signup to receive the
+//     credits.
 //
 // Snippets-only by design: cleaned excerpts are cheap to inject across all
 // 5 fan-out providers. Full-page fetches add 500-2000ms latency and
@@ -237,7 +244,7 @@ export async function webSearch(
     return {
       ok: false,
       reason:
-        "No web search provider configured. Set TAVILY_API_KEY (https://app.tavily.com, free 1000/mo) or BRAVE_API_KEY (https://brave.com/search/api, free 2000/mo) in .env.local.",
+        "No web search provider configured. Set TAVILY_API_KEY (https://app.tavily.com — 1000 free credits/mo, no card required) or BRAVE_API_KEY (https://brave.com/search/api — ~1000 free queries/mo via $5 monthly credit; card required) in .env.local.",
     };
   }
 
