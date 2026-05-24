@@ -20,6 +20,16 @@ export type SseEvent =
   | { type: "synth-done"; latencyMs?: number }
   | { type: "history-saved"; id: number }
   | {
+      type: "classified";
+      complexity: "simple" | "medium" | "complex";
+      ambiguity: number;
+      // When true, only one provider (Llama by default) was run and the
+      // synth was skipped. UI should render the other panels as
+      // "Skipped — simple query" with an override affordance.
+      soloMode: boolean;
+      signals: string[];
+    }
+  | {
       type: "subagent-plan";
       nodes: Array<{
         id: number;

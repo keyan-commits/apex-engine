@@ -50,6 +50,12 @@ export type SubagentDisplayNode = {
   error?: string;
 };
 
+type ClassificationDisplay = {
+  complexity: "simple" | "medium" | "complex";
+  ambiguity: number;
+  soloMode: boolean;
+};
+
 type State = {
   submitting: boolean;
   currentPrompt: string | null;
@@ -61,6 +67,7 @@ type State = {
   synth: SynthState;
   subagentNodes: SubagentDisplayNode[] | null;
   attachments: AttachmentMeta[] | null;
+  classification: ClassificationDisplay | null;
 };
 
 function initialPanel(): PanelState {
@@ -93,6 +100,7 @@ function initialState(): State {
     synth: { status: "idle", text: "", error: null, latencyMs: null },
     subagentNodes: null,
     attachments: null,
+    classification: null,
   };
 }
 
@@ -187,6 +195,7 @@ function reducer(state: State, action: Action): State {
         historyRefreshKey: state.historyRefreshKey,
         activeProject: state.activeProject,
         notice: e.cancelled ? "This entry was cancelled mid-run." : null,
+        classification: null,
         models: {
           claude: answerToPanel(e.answers.claude),
           openai: answerToPanel(e.answers.openai),
@@ -317,6 +326,15 @@ function reducer(state: State, action: Action): State {
                   }
                 : n,
             ),
+          };
+        case "classified":
+          return {
+            ...state,
+            classification: {
+              complexity: ev.complexity,
+              ambiguity: ev.ambiguity,
+              soloMode: ev.soloMode,
+            },
           };
       }
     }
@@ -468,7 +486,11 @@ export default function Home() {
     return () => window.removeEventListener("keydown", onKey);
   }, [state.submitting]);
 
-  async function handleSubmit(prompt: string, files: File[] = []) {
+  async function handleSubmit(
+    prompt: string,
+    files: File[] = [],
+    opts: { forceFullFanout?: boolean } = {},
+  ) {
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -493,6 +515,7 @@ export default function Home() {
         fd.set("enabled", JSON.stringify(enabledProviders));
         fd.set("ecoMode", String(ecoMode));
         fd.set("styleId", synthStyleId);
+        if (opts.forceFullFanout) fd.set("forceFullFanout", "true");
         for (const f of files) fd.append("attachments", f, f.name);
         init.body = fd;
       } else {
@@ -507,6 +530,7 @@ export default function Home() {
           enabled: enabledProviders,
           ecoMode,
           styleId: synthStyleId,
+          forceFullFanout: opts.forceFullFanout === true,
         });
       }
       const res = await fetch("/api/ask", init);
@@ -668,6 +692,47 @@ export default function Home() {
               >
                 ×
               </button>
+            </div>
+          )}
+
+          {state.classification && (
+            <div
+              className={`rounded-lg border px-3 py-2 text-xs flex items-center justify-between gap-3 ${
+                state.classification.soloMode
+                  ? "border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-950/30 text-emerald-900 dark:text-emerald-200"
+                  : "border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900 text-neutral-700 dark:text-neutral-300"
+              }`}
+              aria-label="Prompt classification"
+            >
+              <span className="flex items-center gap-2 flex-wrap">
+                <span className="font-medium">
+                  {state.classification.soloMode
+                    ? "Solo mode — Llama only"
+                    : `Routing: ${state.classification.complexity}`}
+                </span>
+                {state.classification.soloMode && (
+                  <span className="text-[10px] opacity-75">
+                    skipped GPT / Gemini / Claude + synth to save cost
+                  </span>
+                )}
+              </span>
+              {state.classification.soloMode && state.currentPrompt && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (state.currentPrompt) {
+                      handleSubmit(state.currentPrompt, [], {
+                        forceFullFanout: true,
+                      });
+                    }
+                  }}
+                  className="text-[11px] px-2 py-0.5 rounded-md bg-emerald-200 dark:bg-emerald-900/60 hover:bg-emerald-300 dark:hover:bg-emerald-900 text-emerald-950 dark:text-emerald-100 transition whitespace-nowrap"
+                  aria-label="Run all four models on this prompt"
+                  disabled={state.submitting}
+                >
+                  Run all 4
+                </button>
+              )}
             </div>
           )}
 

@@ -35,6 +35,10 @@ type ParsedBody = {
   attachments: AttachmentMeta[];
   ecoMode: boolean;
   styleId: string | undefined;
+  // Per-request override: when true, force the full fan-out + synth even
+  // if the classifier labels the prompt "simple". Default false (let
+  // B2 solo mode take effect on simple prompts).
+  forceFullFanout: boolean;
 };
 
 async function parseRequest(req: Request): Promise<{ ok: true; body: ParsedBody } | { ok: false; error: string }> {
@@ -92,6 +96,7 @@ async function parseRequest(req: Request): Promise<{ ok: true; body: ParsedBody 
         attachments,
         ecoMode: json("ecoMode") === "true",
         styleId: json("styleId") ?? undefined,
+        forceFullFanout: json("forceFullFanout") === "true",
       },
     };
   }
@@ -116,6 +121,7 @@ async function parseRequest(req: Request): Promise<{ ok: true; body: ParsedBody 
       attachments: [],
       ecoMode: body.ecoMode === true,
       styleId: typeof body.styleId === "string" ? body.styleId : undefined,
+      forceFullFanout: body.forceFullFanout === true,
     },
   };
 }
@@ -154,7 +160,8 @@ export async function POST(req: Request) {
   // Eco mode: disable Claude slot, force cheaper synthesizer.
   const enabled = { ...body.enabled };
   if (body.ecoMode) enabled.claude = false;
-  const effectiveSynthesizerId = body.ecoMode ? "gpt-oss-20b" : body.synthesizerId;
+  let effectiveSynthesizerId = body.ecoMode ? "gpt-oss-20b" : body.synthesizerId;
+  let synthesizerEnabled = body.synthesizerEnabled;
 
   // Classify once, up front (sync, no LLM call). B2 (solo mode) and future
   // B5 (escalation) read this. We always classify the *user-typed* prompt,
@@ -164,6 +171,28 @@ export async function POST(req: Request) {
   log.info(
     `classified prompt as ${classification.complexity} (ambiguity=${classification.ambiguity}) signals=${classification.signals.join(",")}`,
   );
+
+  // B2 solo mode: for simple prompts, skip 3/4 fan-out calls and the synth.
+  // Llama on Groq is fast + free and handles short factual lookups well.
+  // Only trips when the parent thread is empty (continuation queries deserve
+  // the same depth as the original); user can override per-request via
+  // forceFullFanout.
+  const soloMode =
+    classification.complexity === "simple" &&
+    !body.forceFullFanout &&
+    body.parentId == null &&
+    body.attachments.length === 0 &&
+    // Don't engage solo on the sub-agent path — Decompose is explicitly
+    // opting into a richer flow.
+    body.ensembleId !== "decompose";
+  if (soloMode) {
+    enabled.claude = false;
+    enabled.openai = false;
+    enabled.gemini = false;
+    synthesizerEnabled = false;
+    effectiveSynthesizerId = undefined;
+    log.info("solo mode engaged — running Llama only, synth disabled");
+  }
 
   // Thread context: prepend prior Q+best-answer chain.
   const parentContext = buildParentContext(body.parentId);
@@ -204,6 +233,16 @@ export async function POST(req: Request) {
         },
         { once: true },
       );
+
+      // Surface the classification + solo-mode decision early so the UI can
+      // render the skip reason on disabled panels before any tokens arrive.
+      send({
+        type: "classified",
+        complexity: classification.complexity,
+        ambiguity: classification.ambiguity,
+        soloMode,
+        signals: classification.signals,
+      });
 
       // Sub-agents path: when ensembleId is "decompose", plan → mini fan-outs → final synth.
       // Falls back silently to standard fan-out if the planner fails.
@@ -311,9 +350,15 @@ export async function POST(req: Request) {
         }
 
         // Emit open events for DISABLED providers too, with status that the client renders grayed.
+        // Solo mode uses a distinct message so the UI can offer an
+        // "override and run full fan-out" affordance instead of pointing
+        // the user at settings.
         for (const p of PROVIDERS) {
           if (enabled[p] === false) {
-            send({ type: "error", provider: p, message: "Disabled in settings" });
+            const message = soloMode
+              ? "Skipped — simple query (solo mode)"
+              : "Disabled in settings";
+            send({ type: "error", provider: p, message });
           }
         }
 
@@ -368,7 +413,7 @@ export async function POST(req: Request) {
         let synthOutputTokens: number | null = null;
         let synthCostUsd: number | null = null;
 
-        if (body.synthesizerEnabled && !signal.aborted) {
+        if (synthesizerEnabled && !signal.aborted) {
           const synthInput: FanOutAnswer[] = useSubagents && subagentTree
             ? [
                 {
@@ -489,7 +534,7 @@ export async function POST(req: Request) {
             synthError,
             projectId: project?.id ?? null,
             cancelled,
-            synthesizerId: body.synthesizerEnabled ? effectiveSynthesizerId ?? null : null,
+            synthesizerId: synthesizerEnabled ? effectiveSynthesizerId ?? null : null,
             totalLatencyMs: Date.now() - startedAt,
             ensembleId: ensemble.id === "none" ? null : ensemble.id,
             roles: Object.keys(roles).length > 0 ? roles : null,
