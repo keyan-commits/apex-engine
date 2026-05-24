@@ -299,6 +299,8 @@ const REGISTERED_TOOL_NAMES = [
   "apex_decompose",
   "apex_report",
   "apex_self_check",
+  "apex_qa_review",
+  "apex_security_review",
 ];
 
 server.tool(
@@ -309,6 +311,85 @@ server.tool(
     const result = selfCheck(REGISTERED_TOOL_NAMES);
     return {
       content: [{ type: "text", text: formatSelfCheckReport(result) }],
+    };
+  },
+);
+
+function runScript(name: string, args: string[]): {
+  ok: boolean;
+  stdout: string;
+  stderr: string;
+  exitCode: number | null;
+} {
+  // Lazy require so the MCP server doesn't pull node:child_process into
+  // any code paths that don't need it.
+  const { spawnSync } = require("node:child_process") as typeof import("node:child_process");
+  const r = spawnSync("pnpm", [name, ...args], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    env: process.env,
+  });
+  return {
+    ok: r.status === 0,
+    stdout: r.stdout ?? "",
+    stderr: r.stderr ?? "",
+    exitCode: r.status,
+  };
+}
+
+server.tool(
+  "apex_qa_review",
+  "Run the apex-engine QA suite on demand: type-check + tests (build skipped by default for latency). Streams the pass/fail summary back. On failure, writes an auto-feedback bug record to data/feedback/outbox/ so the regression converges with all other feedback. Use this from any Claude Code session whenever you want to verify apex-engine code is healthy without waiting for the post-commit hook.",
+  {
+    includeBuild: z
+      .boolean()
+      .default(false)
+      .describe(
+        "If true, also run `pnpm build`. Default false because the build adds ~10s. Set true before publishing or after dep changes.",
+      ),
+  },
+  async ({ includeBuild }) => {
+    const env = { ...process.env };
+    if (!includeBuild) env.APEX_QA_SKIP_BUILD = "1";
+    const { spawnSync } = require("node:child_process") as typeof import("node:child_process");
+    const r = spawnSync("pnpm", ["qa:check"], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env,
+    });
+    const tail = `${r.stdout ?? ""}\n${r.stderr ?? ""}`
+      .split("\n")
+      .slice(-60)
+      .join("\n");
+    const status =
+      r.status === 0 ? "✓ all checks passed" : `✗ exit code ${r.status}`;
+    return {
+      content: [
+        {
+          type: "text",
+          text: `${status}\n\n\`\`\`\n${tail}\n\`\`\``,
+        },
+      ],
+    };
+  },
+);
+
+server.tool(
+  "apex_security_review",
+  "Run the apex-engine security checker: secret-scan over tracked files, pnpm audit for dep vulnerabilities (high/critical), and apex-specific invariants (no prompt content can land in feedback records, no console.log of prompts in catch blocks). On failure, writes an auto-feedback bug record with severity. Use alongside apex_qa_review whenever code or dependencies change.",
+  {},
+  async () => {
+    const r = runScript("security:check", []);
+    const tail = `${r.stdout}\n${r.stderr}`.split("\n").slice(-60).join("\n");
+    const status = r.ok ? "✓ all security checks passed" : `✗ exit code ${r.exitCode}`;
+    return {
+      content: [
+        {
+          type: "text",
+          text: `${status}\n\n\`\`\`\n${tail}\n\`\`\``,
+        },
+      ],
     };
   },
 );
