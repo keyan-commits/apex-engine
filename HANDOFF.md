@@ -3,9 +3,32 @@
 > Updated after every completed task. Read this first to resume work in a new session — it captures volatile state that `CLAUDE.md` doesn't (CLAUDE.md is stable architecture; this is "where are we right now").
 
 **Last updated:** 2026-05-24
-**Last action:** Wave 8 shipped + feedback-channel end-to-end round-trip verified. Claude Code restarted, apex_self_check confirms MCP is on `7dc9d44` (7 tools loaded). Three feedback records (1 smoke test + 2 auto-filed bug reports from the QA + Security review agents) flushed via `pnpm feedback:flush` into GitHub Issues [#1](https://github.com/keyan-commits/apex-engine/issues/1)–[#3](https://github.com/keyan-commits/apex-engine/issues/3); all three closed (#2 + #3 with the `7dc9d44` fix-commit reference; #1 as channel-verified). Outbox empty, three JSON records archived under `data/feedback/sent/` with `issueUrl` field set.
+**Last action:** Wave 9 shipped — Streamable HTTP transport for the MCP server. `tsx watch` respawns the server on every source change; Claude Code reconnects on next tool call and re-fetches the tool list, so **code changes no longer require a CC restart**. New `pnpm mcp:http` + `pnpm mcp:install:http`. QA + Security review agents auto-dispatched, found 2 real issues (env-load bug in launchers, DNS-rebinding gap in transport options); both fixed in `9067dda`. 9 historic GitHub issues (#4–#12) closed with fix-commit references. 165/165 tests pass, all gates clean.
 
-**Blocked on:** Nothing. Everything Wave-7 and Wave-8 is live in the running MCP.
+**Blocked on:** Nothing. To switch to HTTP transport: run `pnpm mcp:install:http` once, then `pnpm mcp:http` in a long-lived terminal. Existing stdio install still works (no breaking change).
+
+## Wave 9 — what shipped (2026-05-24)
+
+| # | Feature | LOC | Commit |
+|---|---------|-----|--------|
+| Auto-flush | `src/lib/feedback-flush.ts` shared lib (flushAll + flushStatus + formatFlushNotice + exponential backoff + lockfile). MCP server runs auto-flush every 30 min via `setInterval(..).unref()`. New `pnpm feedback:watch` daemon for users without CC open. MCP tool responses prepend a nudge if backlog + recent failure. | ~700 | `16f3810` |
+| Auto-flush polish | Extract `SECRET_PATTERNS` to shared module. Add Anthropic / GH PAT v2 / Stripe / Slack / Bearer redaction. Fix feedback-watch PID file (`O_EXCL|O_NOFOLLOW`). Split `lock-held` from `backoff`. Bounded `acquireLock()`. | ~310 | `984635d` |
+| HTTP transport | New `src/mcp/register-tools.ts` extracts tool registration shared by both transports. New `src/mcp/http-server.ts` (Streamable HTTP, stateless, dual-stack 127.0.0.1+::1, /healthz + /mcp, graceful shutdown, Origin allowlist). New `bin/apex-engine-mcp-http` launcher using `tsx watch`. New `pnpm mcp:http` + `pnpm mcp:install:http`. | ~860 | `f9121b6` |
+| HTTP polish | Both launchers shell-source `.env.local` (tsx doesn't forward `--env-file-if-exists`). Enable `enableDnsRebindingProtection` + `allowedHosts` + `allowedOrigins` on the transport. | ~60 | `9067dda` |
+
+165/165 tests pass; pnpm qa:check + pnpm security:check + pnpm type-check + pnpm build all clean.
+
+### GitHub issues — Wave 8 → Wave 9 round-trip
+
+12 issues opened, all closed. Most of the noise came from a self-failing security gate (now fixed) that auto-emitted records on every commit until the loop was broken. Wave 9 review agents added 2 more, also fixed.
+
+| # | Source | Fix commit |
+|---|---|---|
+| #4 – #8 | secret-scan self-fail spam | `984635d` |
+| #9 | missing redaction patterns | `984635d` |
+| #10 | feedback-watch PID symlink follow | `984635d` |
+| #11 | DNS-rebinding off by default | `9067dda` |
+| #12 | env-file flag silently dropped | `9067dda` |
 
 ## Wave 8 — what shipped (2026-05-24)
 

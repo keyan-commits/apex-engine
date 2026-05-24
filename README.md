@@ -144,21 +144,33 @@ Apex ships as an MCP server. Claude Code, Claude Desktop, or any MCP client can 
 - `apex_decompose({ prompt })` — sub-agent decomposition (planner + mini fan-outs + briefing).
 - `apex_report({ kind, title, description, promptSnippet?, errorText? })` — file a bug or improvement against apex-engine from any Claude Code session. See [feedback channel](#cross-instance-feedback) below.
 
-**Setup (one-shot):**
+**Setup — two transport choices:**
+
+| Mode | Hot reload on code changes | Process model | Install |
+|---|---|---|---|
+| **HTTP (recommended)** | ✅ Yes — `tsx watch` respawns on file change; CC reconnects on next call. No restart needed. | Long-lived `pnpm mcp:http` in a terminal. | `pnpm mcp:install:http` + `pnpm mcp:http` |
+| stdio | No — CC restart required to pick up code changes. | Per-CC-session child, lifecycle owned by CC. | `pnpm mcp:install` |
 
 ```bash
-pnpm mcp:install
+# HTTP (recommended after Wave 9)
+pnpm mcp:install:http       # registers http://127.0.0.1:31001/mcp with `claude mcp add`
+pnpm mcp:http               # long-lived server with tsx watch — keep this running
+
+# stdio (default; works without a separate process)
+pnpm mcp:install            # registers the stdio launcher
 ```
 
-This resolves the absolute path to `bin/apex-engine-mcp`, ensures it's executable, and runs `claude mcp add apex-engine -- <path>`. Re-running it after moving the repo updates the stored path. If the `claude` CLI isn't on PATH, the script prints the manual command and a Claude Desktop config snippet.
+Both launchers shell-source `.env.local` so provider API keys are available to the MCP child regardless of how the shell was set up.
 
 Manual fallback:
 
 ```bash
+# HTTP
+claude mcp add apex-engine --transport http http://127.0.0.1:31001/mcp
+
+# stdio
 claude mcp add apex-engine -- /absolute/path/to/apex-engine/bin/apex-engine-mcp
 ```
-
-`bin/apex-engine-mcp` passes `--env-file-if-exists=$DIR/.env.local` to tsx, so it reads the same env as `pnpm dev` and shares the SQLite history DB — MCP queries appear in the sidebar.
 
 ## Cross-instance feedback
 
