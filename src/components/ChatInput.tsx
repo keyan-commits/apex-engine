@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { classify } from "@/lib/classify";
+import { REWRITER_AMBIGUITY_THRESHOLD } from "@/lib/rewriter";
 import { estimateTokens, formatTokens } from "@/lib/tokens";
 import { TemplatePicker } from "./TemplatePicker";
 
@@ -11,6 +13,12 @@ const ACCEPT = "image/png,image/jpeg,image/gif,image/webp,text/plain,text/markdo
 type Attached = {
   file: File;
   previewUrl?: string;
+};
+
+type RewriteSuggestion = {
+  original: string;
+  rewritten: string;
+  reasoning: string;
 };
 
 function isAcceptableFile(file: File): boolean {
@@ -47,6 +55,8 @@ export function ChatInput({
   const [value, setValue] = useState("");
   const [attached, setAttached] = useState<Attached[]>([]);
   const [dragOver, setDragOver] = useState(false);
+  const [suggestion, setSuggestion] = useState<RewriteSuggestion | null>(null);
+  const [checkingRewrite, setCheckingRewrite] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Revoke object URLs when attachments change/unmount.
@@ -77,15 +87,67 @@ export function ChatInput({
     });
   }
 
-  function submit() {
-    const v = value.trim();
-    if (!v || streaming) return;
-    onSubmit(v, attached.map((a) => a.file));
+  function finalizeSubmit(promptText: string) {
+    onSubmit(promptText, attached.map((a) => a.file));
     setValue("");
     for (const a of attached) {
       if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
     }
     setAttached([]);
+    setSuggestion(null);
+  }
+
+  async function submit() {
+    const v = value.trim();
+    if (!v || streaming || checkingRewrite) return;
+
+    // Pre-flight rewriter (A1): only check when the heuristic ambiguity
+    // is above the threshold AND there are no attachments (rewriting a
+    // multimodal prompt loses the attachment context). Failure is silent —
+    // fall through to a normal submit.
+    const ambiguity = classify(v).ambiguity;
+    if (ambiguity >= REWRITER_AMBIGUITY_THRESHOLD && attached.length === 0) {
+      setCheckingRewrite(true);
+      try {
+        const res = await fetch("/api/rewrite", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt: v }),
+        });
+        if (res.ok) {
+          const data = (await res.json()) as {
+            rewritten: string;
+            reasoning: string;
+            needed: boolean;
+          };
+          if (data.needed && data.rewritten.trim() !== v) {
+            setSuggestion({
+              original: v,
+              rewritten: data.rewritten,
+              reasoning: data.reasoning,
+            });
+            setCheckingRewrite(false);
+            return; // Wait for the user's choice.
+          }
+        }
+      } catch {
+        // Rewriter outage — proceed without suggestion.
+      } finally {
+        setCheckingRewrite(false);
+      }
+    }
+
+    finalizeSubmit(v);
+  }
+
+  function acceptRewrite() {
+    if (!suggestion) return;
+    finalizeSubmit(suggestion.rewritten);
+  }
+
+  function rejectRewrite() {
+    if (!suggestion) return;
+    finalizeSubmit(suggestion.original);
   }
 
   function onPaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
@@ -142,6 +204,63 @@ export function ChatInput({
         className="w-full resize-none bg-transparent text-sm outline-none placeholder:text-neutral-400"
         disabled={streaming}
       />
+      {suggestion && (
+        <div className="mt-2 rounded-md border border-sky-300 dark:border-sky-700 bg-sky-50 dark:bg-sky-950/30 p-3 text-xs space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <div className="font-semibold text-sky-900 dark:text-sky-200 flex items-center gap-1.5">
+              <span aria-hidden>✎</span>
+              <span>Clearer rewrite suggested</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setSuggestion(null)}
+              className="text-sky-700 dark:text-sky-300 hover:text-sky-900 dark:hover:text-sky-100"
+              aria-label="Dismiss suggestion"
+            >
+              ×
+            </button>
+          </div>
+          {suggestion.reasoning && (
+            <div className="text-sky-800 dark:text-sky-300 italic">
+              {suggestion.reasoning}
+            </div>
+          )}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+            <div className="rounded bg-white/70 dark:bg-neutral-900/40 border border-neutral-200 dark:border-neutral-800 p-2">
+              <div className="text-[10px] uppercase tracking-wide text-neutral-500 mb-1">
+                Original
+              </div>
+              <div className="text-neutral-800 dark:text-neutral-200 whitespace-pre-wrap">
+                {suggestion.original}
+              </div>
+            </div>
+            <div className="rounded bg-white/70 dark:bg-neutral-900/40 border border-sky-200 dark:border-sky-800 p-2">
+              <div className="text-[10px] uppercase tracking-wide text-sky-700 dark:text-sky-300 mb-1">
+                Rewritten
+              </div>
+              <div className="text-neutral-800 dark:text-neutral-200 whitespace-pre-wrap">
+                {suggestion.rewritten}
+              </div>
+            </div>
+          </div>
+          <div className="flex items-center justify-end gap-2 pt-1">
+            <button
+              type="button"
+              onClick={rejectRewrite}
+              className="text-[11px] px-2.5 py-1 rounded-md bg-neutral-200 dark:bg-neutral-800 hover:bg-neutral-300 dark:hover:bg-neutral-700 transition"
+            >
+              Use original
+            </button>
+            <button
+              type="button"
+              onClick={acceptRewrite}
+              className="text-[11px] px-2.5 py-1 rounded-md bg-sky-600 hover:bg-sky-700 text-white transition"
+            >
+              Use rewritten
+            </button>
+          </div>
+        </div>
+      )}
       {attached.length > 0 && (
         <div className="flex flex-wrap gap-2 pt-2 border-t border-neutral-100 dark:border-neutral-800 mt-2">
           {attached.map((a, idx) => (
@@ -247,10 +366,10 @@ export function ChatInput({
           <button
             type="button"
             onClick={submit}
-            disabled={!value.trim()}
+            disabled={!value.trim() || checkingRewrite}
             className="rounded-lg bg-neutral-900 dark:bg-neutral-100 text-white dark:text-neutral-900 text-sm font-medium px-4 py-1.5 hover:bg-neutral-700 dark:hover:bg-neutral-300 disabled:opacity-40 disabled:cursor-not-allowed transition"
           >
-            Submit
+            {checkingRewrite ? "Checking…" : "Submit"}
           </button>
         )}
       </div>
