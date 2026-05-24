@@ -16,7 +16,9 @@
     "test": "vitest",
     "test:run": "vitest run",
     "test:ui": "vitest --ui",
-    "mcp": "tsx src/mcp/server.ts"
+    "mcp": "tsx src/mcp/server.ts",
+    "mcp:install": "tsx scripts/mcp-install.ts",
+    "feedback:flush": "tsx scripts/feedback-flush.ts"
   },
   "dependencies": {
     "@ai-sdk/deepseek": "^2.0.35",

@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { fanOut, type FanOutItem } from "@/lib/engine";
+import { createReport } from "@/lib/feedback";
 import { saveHistory, type HistoryAnswer } from "@/lib/history";
 import { PROVIDERS, PROVIDER_LABELS, type Provider } from "@/lib/providers";
 import { findEnsemble } from "@/lib/roles";
@@ -225,6 +226,66 @@ server.tool(
     return {
       content: [{ type: "text", text: briefing }],
     };
+  },
+);
+
+server.tool(
+  "apex_report",
+  "Record a bug report or improvement suggestion against apex-engine. Reports are written to the local apex-engine repo's data/feedback/outbox/ as structured JSON; the repo owner runs `pnpm feedback:flush` to batch them into GitHub Issues on the upstream apex-engine repository. Use this from any Claude Code session (including ones outside the apex-engine project) when you notice a bug or have a concrete improvement idea — the goal is to converge feedback from every instance.",
+  {
+    kind: z
+      .enum(["bug", "improvement", "praise", "question"])
+      .describe(
+        "Report type. bug=defect; improvement=feature suggestion; praise=positive feedback; question=clarification.",
+      ),
+    title: z
+      .string()
+      .min(3)
+      .describe("Short, specific title — under ~100 chars."),
+    description: z
+      .string()
+      .describe(
+        "Markdown body. Include repro steps for bugs, motivation/use-case for improvements.",
+      ),
+    promptSnippet: z
+      .string()
+      .optional()
+      .describe(
+        "Optional excerpt of the user prompt that triggered this. First 200 chars only — full prompts and attachments are never stored.",
+      ),
+    errorText: z
+      .string()
+      .optional()
+      .describe("Optional stack trace or error message."),
+  },
+  async ({ kind, title, description, promptSnippet, errorText }) => {
+    try {
+      const { record, path } = createReport({
+        kind,
+        title,
+        description,
+        channel: "mcp",
+        context: {
+          ...(promptSnippet ? { promptSnippet } : {}),
+          ...(errorText ? { error: errorText } : {}),
+        },
+      });
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Feedback recorded as ${record.id} (kind=${record.kind}).\nWritten to: ${path}\n\nRun \`pnpm feedback:flush\` in the apex-engine repo to push it (and any other pending reports) as GitHub Issues.`,
+          },
+        ],
+      };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return {
+        content: [
+          { type: "text", text: `Failed to record feedback: ${msg}` },
+        ],
+      };
+    }
   },
 );
 

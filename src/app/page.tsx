@@ -8,6 +8,7 @@ import { ModelPanel, type PanelState } from "@/components/ModelPanel";
 import { ProjectSelector } from "@/components/ProjectSelector";
 import { Settings } from "@/components/Settings";
 import { ShortcutsHelp } from "@/components/ShortcutsHelp";
+import { FeedbackButton } from "@/components/FeedbackButton";
 import { StatsChip } from "@/components/StatsChip";
 import { SubagentsPanel } from "@/components/SubagentsPanel";
 import { SynthesizerPanel, type SynthState } from "@/components/SynthesizerPanel";
@@ -624,6 +625,7 @@ export default function Home() {
             </div>
             <div className="flex items-center gap-3">
               <StatsChip refreshKey={state.historyRefreshKey} />
+              <FeedbackButton />
               <p className="text-xs text-neutral-500 hidden md:block">
                 Multi-LLM fan-out · Mixture of Agents
               </p>

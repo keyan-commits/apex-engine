@@ -3,43 +3,26 @@
 > Updated after every completed task. Read this first to resume work in a new session — it captures volatile state that `CLAUDE.md` doesn't (CLAUDE.md is stable architecture; this is "where are we right now").
 
 **Last updated:** 2026-05-24
-**Last action:** Pushed the 100-feature pass (6 waves, commits 8d475a8..736c39e) to `origin/main`. Then ran an `apex_synthesize` research pass (Research ensemble + Claude) on "must-have features for prompt-quality + cost-effective model routing." 16 features identified, top 5 ranked, full plan captured in **Next session** below.
+**Last action:** Shipped Wave 7 — five planned features (apex_decompose bug fix, A7 self-consistency, B3 cost tracking, B1 classifier, B2 solo mode, A1 rewriter) plus two ad-hoc additions (cross-instance feedback channel, `pnpm mcp:install` helper). 107/107 tests pass; type-check + build clean. Six commits pushed to `origin/main`.
 
-**Blocked on:** **User must restart Claude Code** before the next session — the currently-running `apex-engine` MCP child process was spawned before `apex_decompose` was added in Wave 5. After restart, `apex_decompose` becomes callable and can be used to plan/execute the next-wave work itself.
+**Blocked on:** Nothing actively. The locally-running MCP child process still holds Wave 6's code in memory, so `apex_decompose` / `apex_report` are only callable from this CC session after a Claude Code restart.
 
-## Next session — Accuracy + cost-routing wave (5 features)
+## Wave 7 — what shipped (2026-05-24)
 
-Cross-checked with all 4 models + the synthesizer. Strong consensus on this order. ~520 LOC total, no L-complexity work, sets up the 11 backlog items.
+| # | Feature | LOC | Commit |
+|---|---------|-----|--------|
+| 0 | apex_decompose bug fix (Groq strict-JSON schema rejected `.default([])`) | ~10 | f6eaf5f |
+| 1 | A7 self-consistency cross-check in synth (`## Notable Disagreements` section + amber callout) | ~80 | f6eaf5f |
+| 2 | B3 persisted cost tracking (real paid-tier rates, history columns, `result.usage` drained from streams) | ~250 | f6eaf5f |
+| 3 | B1 heuristic complexity classifier (sync, no LLM call, strong-verb vs soft-verb scoring) | ~340 | 8323409 |
+| 4 | B2 per-query solo mode (Llama only on simple prompts; "Run all 4" override) | ~125 | 6c047d0 |
+| 5 | A1 pre-flight prompt rewriter (gated by ambiguity ≥ 0.4; always-show-diff UX) | ~260 | 1a1737d |
+| 6 | Cross-instance feedback channel (UI button, `apex_report` MCP tool, `/api/feedback`, `pnpm feedback:flush`) | ~500 | (incoming) |
+| 7 | `pnpm mcp:install` one-shot installer (registers this clone's MCP launcher with Claude Code) | ~110 | (incoming) |
 
-### Ship order (compounding)
+107/107 tests pass; type-check + build clean.
 
-**1. A7 — Self-consistency cross-check in synth** (~100 LOC)
-- *Files:* `src/lib/synthesize.ts` (modify `buildSynthPrompt` to ask the synth to identify, score, and surface disagreements across the 4 answers), `src/components/SynthesizerPanel.tsx` (render disagreement markers when present).
-- *Why first:* highest quality-per-LOC. No new data, no migration, no UI surface. Invisible when models agree; valuable when they don't.
-
-**2. B3 — Persisted cost tracking** (~100 LOC)
-- *Files:* `src/lib/cost.ts` (extend with real per-model prices; today it's a stub with zeros), `src/lib/history.ts` (migration: `total_cost_usd`, `total_input_tokens`, `total_output_tokens`), `src/lib/engine.ts` (drain `usage` from each provider's stream — Vercel AI SDK exposes `result.usage`), `src/lib/synthesize.ts` (same).
-- *Why second:* **foundation.** Every other routing decision (B5, B7, B8) is unprincipled without spend data. `cost.ts` already exists but never writes — fix the gap.
-
-**3. B1 — Heuristic complexity classifier** (~150 LOC)
-- *Files:* new `src/lib/classify.ts` (~100 LOC: regex + length + code-fence count + question-mark count + keyword bag → `{simple, medium, complex}` + ambiguity score; **must stay sync** — no LLM call), `src/lib/tiers.ts` (+30, accept complexity in `resolveModel`), `src/lib/engine.ts` (+20, pass complexity into `fanOut`).
-- *Why third:* gateway. Unlocks B2 / B4 / B5 / A2. The hard rule per cross-check consensus: **no LLM call here.** A 300ms classifier call defeats the speed win — Groq *is* the fan-out.
-
-**4. B2 — Per-query single-model mode** (~30 LOC)
-- *Files:* `src/lib/engine.ts` (+15, "solo" branch), `src/app/api/ask/route.ts` (+15, skip fan-out + synth when `simple`, run only Groq Llama, emit normal SSE events with a "solo" flag).
-- *Why fourth:* once B1 lands, ~75% of trivial queries skip 3/4 calls + synth. Biggest cost cut in the wave. UI gets a small "solo" badge — no new panel.
-
-**5. A1 — Pre-flight prompt rewriter** (~140 LOC)
-- *Files:* new `src/lib/rewriter.ts` (~80 LOC: cheap Groq `gpt-oss-20b` rewrites vague prompts; returns `{rewritten, reasoning}`), `src/app/api/ask/route.ts` (+20, emit `rewriter-suggestion` SSE event before fan-out), `src/components/ChatInput.tsx` (+40, preview chip with diff + "use original" toggle).
-- *Why fifth:* dramatic answer lift on vague prompts, server-side, free (Groq). **Critical UX:** never silently mutate — always show diff with "use original" button. Hidden rewriting = trust killer (Claude review point).
-
-### Dependencies
-
-- **B3 → B5, B7, B8** (can't tune what you can't measure).
-- **B1 → B2, B4, B5, A2** (shared complexity/ambiguity signal — write it once).
-- **A3 → A4** (placeholder schema before few-shot exemplars).
-
-### Backlog (subsequent waves, full feature list from the research)
+### Backlog (subsequent waves, full feature list from prior research)
 
 **Area A — prompt quality:**
 - A2 Clarifying-question gate (re-uses B1's ambiguity score; new `clarify-ask` SSE event + `ClarifyDialog.tsx`)
@@ -51,41 +34,39 @@ Cross-checked with all 4 models + the synthesizer. Strong consensus on this orde
 
 **Area B — cost routing:**
 - B4 Speed↔Quality slider (5 detents, replaces Eco mode toggle when shipped)
-- B5 Escalation ladder (run cheap first; re-run on big if low-confidence)
+- B5 Escalation ladder (run cheap first; re-run on big if low-confidence) — depends on B3 ✓
 - B6 Free-tier-only mode (locks routing to Groq + Gemini Flash + GitHub Models)
 - B7 Learned routing (k-NN over embedding-augmented history — **defer until >1000 rows**)
-- B8 Budget guard (daily/monthly USD cap, soft-warn at 80%, hard-block at 100%)
+- B8 Budget guard (daily/monthly USD cap, soft-warn at 80%, hard-block at 100%) — depends on B3 ✓
 
-### Pitfalls to avoid (all 4 models + synth consensus)
+### Pitfalls to keep in mind (all 4 models + synth consensus, still current)
 
-1. **Never run an LLM call to classify every query.** Use sync regex/length/keyword heuristics. Anything else collapses the latency win.
-2. **Don't build escalation (B5) before cost tracking (B3).** Adds latency to every query, and you can't prove it wins without measurement.
+1. **Never run an LLM call to classify every query.** B1 is sync regex/length/keyword heuristics on purpose.
+2. **Don't build escalation (B5) before cost tracking (B3).** ✓ Now safe to start B5.
 3. **Don't build the learned router (B7) until history has >1000 rows.** Signal is noise below that.
 4. **Don't kill in-flight streams for "speculative early stop."** Groq finishes in 1-2s; UI flicker isn't worth zero real savings.
 5. **Don't enforce JSON schemas on Llama-on-Groq.** Structured-output is flaky. Spec mode applies only to synth.
-6. **Never silently rewrite user prompts.** Always show the diff with a "use original" toggle.
-7. **Don't ask the 4 base models for citations.** They hallucinate URLs. Citation validation lives only in the synth pass, cross-referencing the other 3 answers + text/PDF attachments.
+6. **Never silently rewrite user prompts.** A1 enforces this — always show diff with "use original".
+7. **Don't ask the 4 base models for citations.** They hallucinate URLs. Citation validation lives only in the synth pass.
 8. **Don't fold away Eco mode before B4 ships.** Existing muscle memory.
+9. **Groq strict JSON schema rejects `.default([])`.** Every property must be in `required[]`. See `src/lib/subagents.ts` + `src/lib/rewriter.ts` — both deliberately avoid this footgun.
 
 ### Resume-from-clean-state commands
 
 ```bash
-# After Claude Code restart, verify MCP picked up apex_decompose:
-# (in Claude Code) call apex_decompose with prompt "test ping"
-# Expect: decomposed sub-questions with answers, no "tool not found" error.
-
 cd /Users/nikoe/Development/Study/apex-engine
 git status                            # should be clean, on main, in sync with origin
-pnpm install                          # if node_modules out of date
-pnpm test:run                         # baseline: should be 84/84 passing
-pnpm type-check                       # baseline: clean
+pnpm install
+pnpm test:run                         # baseline: 107/107
+pnpm type-check                       # clean
+pnpm build                            # clean
 
-# Start with feature 1 (A7 — self-consistency in synth):
-# Edit src/lib/synthesize.ts → buildSynthPrompt(). Add a section asking
-# the synth to surface disagreements with confidence tags.
-# Edit src/components/SynthesizerPanel.tsx to render flagged disagreements.
-# Test by running a query where the 4 models will diverge
-# (e.g., "Should I use Tokio or async-std for a new Rust project in 2026?").
+# Optional: re-register MCP after a fresh clone (or after moving the repo):
+pnpm mcp:install
+# Then restart any running Claude Code session so the MCP child reloads.
+
+# Optional: flush any pending feedback as GitHub Issues:
+pnpm feedback:flush
 ```
 
 ## What's in apex-engine today
@@ -110,13 +91,19 @@ Stack: Next.js 15 + React 19 + TS5 + Tailwind v4 · Vercel AI SDK v6 (`@ai-sdk/o
 - **Code rendering** — react-syntax-highlighter (Prism + oneDark) for fenced code blocks with hover-reveal Copy button. Inline code stays as lightweight chips. Markdown component is React.memo + rAF-coalesced to kill streaming re-render thrash.
 - **Health + metrics** — /api/health pings each provider with a 1-token completion (memoized 30s); /api/metrics returns p50/p95/p99 total latency + per-provider success rate from the last 500 history rows; /api/stats returns today's query count + cache hits.
 - **/logs viewer** — server-rendered table of persisted logs (logger().warn/error inline-persists via `logs` table); filter by level.
-- **MCP server** — `apex_fanout` (with optional ensembleId), `apex_synthesize`, `apex_decompose` over stdio. Boots via `bin/apex-engine-mcp`.
+- **MCP server** — `apex_fanout` (with optional ensembleId), `apex_synthesize`, `apex_decompose`, `apex_report` over stdio. Boots via `bin/apex-engine-mcp`. One-shot install: `pnpm mcp:install`.
+- **Self-consistency** — synth prompt now ends with optional `## Notable Disagreements` H2 when 2+ models materially disagree. UI splits + renders in amber callout.
+- **Complexity classifier** — sync regex/length/keyword heuristic (`src/lib/classify.ts`) tags every prompt simple / medium / complex + ambiguity score. SSE event `classified` surfaces the decision; client shows a small chip with "Run all 4" override.
+- **Solo mode (B2)** — simple prompts skip 3/4 fan-out + synth, run only Llama. Guarded against thread continuations, attachments, Decompose ensemble, and per-request `forceFullFanout` override.
+- **Pre-flight rewriter (A1)** — vague prompts trigger a Groq `gpt-oss-20b` rewrite suggestion shown as a side-by-side diff. User picks original or rewritten; never silent.
+- **Cost tracking (B3)** — `result.usage` drained from every Vercel-AI-SDK stream; paid-tier rates applied; per-answer `inputTokens / outputTokens / costUsd`; history aggregates total tokens + USD per query.
+- **Feedback channel** — `Feedback` button (UI), `apex_report` MCP tool, `POST /api/feedback`, all write to `data/feedback/outbox/`. `pnpm feedback:flush` batches into GitHub Issues via `gh`. See `feedback/README.md`.
 - **Keyboard** — Enter / Shift+Enter / Esc / "?" (shortcuts help) / Alt+1..5 (quick-switch ensembles).
 - **UX** — Stop button (replaces Submit while streaming), copy buttons on every panel, char + latency footer, char count + token estimate below ChatInput, dismissable warning banner, compact mode (header toggle).
 
-**Tests:** 10 files, 84 tests. Covers tiers, synthesizer-options, errors, sse, roles, attachments, retry, cache, cost, tokens, templates, synth-styles, sub-agents DAG validation. `pnpm test:run`.
+**Tests:** 13 files, 107 tests. Covers tiers, synthesizer-options, errors, sse, roles, attachments, retry, cache, cost, tokens, templates, synth-styles, sub-agents DAG validation, planSchema Groq-strict regression, synth prompt + disagreement split, classifier, rewriter threshold. `pnpm test:run`.
 
-**Verification:** `pnpm type-check` clean, `pnpm test:run` 84/84, `pnpm build` clean (54.5 kB page, 155 kB First Load JS). MCP server boots and responds to initialize on stdio.
+**Verification:** `pnpm type-check` clean, `pnpm test:run` 107/107, `pnpm build` clean. MCP server boots and responds to initialize on stdio.
 
 **Deferred (low-leverage, can be picked up later):**
 

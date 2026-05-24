@@ -94,6 +94,8 @@ pnpm test:run        # vitest one-shot (CI)
 pnpm test:ui         # vitest browser UI
 pnpm lint
 pnpm mcp             # run the MCP server directly
+pnpm mcp:install     # register this clone as the apex-engine MCP server with Claude Code (one-shot)
+pnpm feedback:flush  # batch local feedback reports → GitHub Issues
 ```
 
 ## API keys (all free, none required to start)
@@ -140,14 +142,31 @@ Apex ships as an MCP server. Claude Code, Claude Desktop, or any MCP client can 
 - `apex_fanout({ prompt, includeClaude?, ensembleId? })` — parallel queries; optional role ensemble.
 - `apex_synthesize({ prompt, includeClaude?, synthesizerId? })` — fan-out plus a synthesized "best answer".
 - `apex_decompose({ prompt })` — sub-agent decomposition (planner + mini fan-outs + briefing).
+- `apex_report({ kind, title, description, promptSnippet?, errorText? })` — file a bug or improvement against apex-engine from any Claude Code session. See [feedback channel](#cross-instance-feedback) below.
 
-**Setup:**
+**Setup (one-shot):**
 
 ```bash
-claude mcp add apex-engine -- /Users/nikoe/Development/Study/apex-engine/bin/apex-engine-mcp
+pnpm mcp:install
+```
+
+This resolves the absolute path to `bin/apex-engine-mcp`, ensures it's executable, and runs `claude mcp add apex-engine -- <path>`. Re-running it after moving the repo updates the stored path. If the `claude` CLI isn't on PATH, the script prints the manual command and a Claude Desktop config snippet.
+
+Manual fallback:
+
+```bash
+claude mcp add apex-engine -- /absolute/path/to/apex-engine/bin/apex-engine-mcp
 ```
 
 `bin/apex-engine-mcp` passes `--env-file-if-exists=$DIR/.env.local` to tsx, so it reads the same env as `pnpm dev` and shares the SQLite history DB — MCP queries appear in the sidebar.
+
+## Cross-instance feedback
+
+Every apex-engine instance (UI, MCP, API) can record bug reports and improvement suggestions to a local outbox. The repo owner batches them into GitHub Issues with `pnpm feedback:flush` (requires `gh` CLI authenticated). See [`feedback/README.md`](feedback/README.md) for the schema, storage layout, and privacy rules.
+
+- **UI:** "Feedback" button in the header.
+- **MCP:** `apex_report` tool — call it from any Claude Code session, including ones outside the apex-engine project. The report lands in apex-engine's own `data/feedback/outbox/`.
+- **HTTP:** `POST /api/feedback`.
 
 ## Architecture
 

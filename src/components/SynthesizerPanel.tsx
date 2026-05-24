@@ -1,6 +1,6 @@
 "use client";
 
-import { splitDisagreements } from "@/lib/synthesize";
+import { splitDisagreements } from "@/lib/synth-format";
 import { CopyButton } from "./CopyButton";
 import { Markdown } from "./Markdown";
 import { StatusBadge, type Status } from "./StatusBadge";
