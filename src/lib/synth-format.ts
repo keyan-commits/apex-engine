@@ -16,7 +16,15 @@ const DISAGREEMENT_RE = /(^|\n)##\s+Notable\s+Disagreements\s*\n/i;
 // one-sentence justification. The UI parses + surfaces this as a badge
 // and offers a "re-run with more models" affordance when the score is
 // below a threshold.
-const CONFIDENCE_RE = /(^|\n)##\s+Confidence\s*\n+([\s\S]*?)$/i;
+//
+// QA fix (post-Wave-12a review): the original regex used a trailing `$`
+// anchor + lazy `[\s\S]*?`, which captured EVERYTHING after `##
+// Confidence` regardless of what other H2 headings followed. When the
+// model emitted `## Confidence` BEFORE `## Notable Disagreements`,
+// disagreements got swallowed into the confidence justification and
+// the UI callout never rendered. Lookahead now stops at the next H2
+// or end-of-string.
+const CONFIDENCE_RE = /(^|\n)##\s+Confidence\s*\n+([\s\S]*?)(?=\n##\s|$)/i;
 const CONFIDENCE_NUMBER_RE = /\b(\d{1,3})\s*(?:\/\s*100)?\b/;
 
 export type SynthSplit = {
@@ -26,12 +34,17 @@ export type SynthSplit = {
 };
 
 export function splitDisagreements(text: string): SynthSplit {
-  // Step 1: peel off the optional Confidence section at the end.
+  // Step 1: peel off the optional Confidence section (may appear before
+  // OR after Notable Disagreements). We splice the matched range out of
+  // the text and continue parsing the rest, so a Confidence section
+  // sandwiched between body and disagreements doesn't swallow the
+  // disagreements heading.
   const confidenceMatch = CONFIDENCE_RE.exec(text);
   let working = text;
   let confidence: SynthSplit["confidence"] = null;
   if (confidenceMatch) {
     const start = confidenceMatch.index + (confidenceMatch[1] ? 1 : 0);
+    const end = confidenceMatch.index + confidenceMatch[0].length;
     const block = confidenceMatch[2].trim();
     const numMatch = CONFIDENCE_NUMBER_RE.exec(block);
     const score = numMatch ? clampScore(Number(numMatch[1])) : null;
@@ -42,7 +55,9 @@ export function splitDisagreements(text: string): SynthSplit {
       : block;
     if (score !== null) {
       confidence = { score, justification };
-      working = text.slice(0, start).trimEnd();
+      // Splice the confidence section OUT so the remaining text is
+      // body + (maybe) disagreements.
+      working = (text.slice(0, start) + text.slice(end)).trimEnd();
     }
   }
   // Step 2: peel off the optional Notable Disagreements section.

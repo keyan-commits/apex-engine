@@ -137,4 +137,27 @@ describe("splitDisagreements — confidence calibration (Wave 12.2)", () => {
     const r = splitDisagreements("Body.\n\n## Confidence\n\nno number here");
     expect(r.confidence).toBeNull();
   });
+
+  it("survives reverse ordering (Confidence appears BEFORE Notable Disagreements)", () => {
+    // QA review bug: the original regex with `$` anchor swallowed
+    // everything after `## Confidence` so the Disagreements section
+    // got merged into the justification and the UI callout vanished.
+    const text = `Main answer.
+
+## Confidence
+
+70 — moderate consensus.
+
+## Notable Disagreements
+
+- Topic A: GPT says X; Llama says Y.`;
+    const r = splitDisagreements(text);
+    expect(r.body).toBe("Main answer.");
+    expect(r.confidence?.score).toBe(70);
+    expect(r.confidence?.justification).toContain("moderate consensus");
+    // The key regression: disagreements MUST survive when Confidence
+    // appears earlier.
+    expect(r.disagreements).toContain("Topic A");
+    expect(r.disagreements).not.toContain("Notable Disagreements");
+  });
 });

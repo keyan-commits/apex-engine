@@ -105,6 +105,11 @@ export async function* synthesize(
 // the UX (the user sees a draft, then a critique, then a final). The
 // final revised answer alone is what they want. Total latency is ~2×
 // a single synth — measurable but acceptable for an opt-in feature.
+//
+// Cost accounting (post-Wave-12a review fix): all THREE phases consume
+// real provider tokens, so we sum the usage across phases and emit the
+// total on the user's single onUsage callback. Under-reporting only
+// the final phase silently understates RPD pressure by ~3×.
 async function* selfRefinePipeline(
   prompt: string,
   compressedAnswers: FanOutAnswer[],
@@ -112,34 +117,67 @@ async function* selfRefinePipeline(
   config: SynthesizerOption,
   opts: SynthesizeOptions,
 ): AsyncGenerator<string> {
+  const usageAcc: { in: number; out: number } = { in: 0, out: 0 };
+  const captureUsage = (u: StreamUsage | null) => {
+    if (!u) return;
+    usageAcc.in += u.inputTokens;
+    usageAcc.out += u.outputTokens;
+  };
+
   const draftPrompt = buildSynthPrompt(prompt, compressedAnswers, styleSuffix);
-  const draft = await collectFully(draftPrompt, config, opts);
+  const draft = await collectFully(draftPrompt, config, opts, captureUsage);
   if (opts.signal?.aborted) throwAbort(opts.signal);
 
   const critiquePrompt = buildCritiquePrompt(prompt, draft);
-  const critique = await collectFully(critiquePrompt, config, opts);
+  const critique = await collectFully(critiquePrompt, config, opts, captureUsage);
   if (opts.signal?.aborted) throwAbort(opts.signal);
 
   opts.onRefineStart?.();
   const revisePrompt = buildRevisePrompt(prompt, draft, critique, styleSuffix);
 
+  // The final phase reuses the caller's onUsage so its tokens land
+  // exactly as in the non-refine path; we then ADD the draft+critique
+  // totals to that final report after the stream completes.
+  let finalUsage: StreamUsage | null = null;
+  const innerOpts: SynthesizeOptions = {
+    ...opts,
+    onUsage: (u) => {
+      finalUsage = u;
+    },
+  };
+
   if (config.provider === "anthropic-agent") {
-    yield* synthClaudeAgent(revisePrompt, config.model, opts);
-    return;
+    yield* synthClaudeAgent(revisePrompt, config.model, innerOpts);
+  } else {
+    yield* stripThinkTags(synthViaAiSdk(revisePrompt, config, innerOpts));
   }
-  yield* stripThinkTags(synthViaAiSdk(revisePrompt, config, opts));
+
+  // Combine: final phase usage + draft + critique. If the final phase
+  // returned no usage (e.g. Claude Agent SDK), still surface the
+  // accumulated phase 1+2 tokens so cost tracking isn't entirely null.
+  if (opts.onUsage) {
+    const final = finalUsage as StreamUsage | null;
+    if (final || usageAcc.in > 0 || usageAcc.out > 0) {
+      opts.onUsage({
+        inputTokens: (final?.inputTokens ?? 0) + usageAcc.in,
+        outputTokens: (final?.outputTokens ?? 0) + usageAcc.out,
+      });
+    } else {
+      opts.onUsage(null);
+    }
+  }
 }
 
 async function collectFully(
   promptText: string,
   config: SynthesizerOption,
   opts: SynthesizeOptions,
+  onUsage: (u: StreamUsage | null) => void,
 ): Promise<string> {
-  // Don't fire opts.onUsage during the draft/critique phases — usage
-  // accounting should reflect the FINAL revise call so the user-visible
-  // cost matches the user-visible answer length. Phases 1 + 2 are an
-  // internal expense that we eat.
-  const innerOpts: SynthesizeOptions = { ...opts, onUsage: undefined };
+  // Override the caller's onUsage so we capture this phase's tokens
+  // into the local accumulator instead of leaking each phase as a
+  // separate cost event.
+  const innerOpts: SynthesizeOptions = { ...opts, onUsage };
   let out = "";
   if (config.provider === "anthropic-agent") {
     for await (const chunk of synthClaudeAgent(promptText, config.model, innerOpts)) {
