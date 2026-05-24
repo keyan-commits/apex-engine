@@ -33,7 +33,7 @@ export function SynthesizerPanel({
 }) {
   const latency = formatLatency(state.latencyMs);
   const chars = state.text.length;
-  const { body, disagreements, confidence } = splitDisagreements(state.text);
+  const { body, disagreements, offTopic, confidence } = splitDisagreements(state.text);
   const lowConfidence =
     confidence != null && confidence.score < CONFIDENCE_LOW_THRESHOLD;
   return (
@@ -95,6 +95,20 @@ export function SynthesizerPanel({
         ) : state.text ? (
           <>
             <Markdown>{body}</Markdown>
+            {offTopic && (
+              <div
+                className="mt-4 rounded-md border border-red-300 dark:border-red-700/60 bg-red-50 dark:bg-red-950/30 px-3 py-2 text-red-900 dark:text-red-200"
+                aria-label="Off-topic answers — models that answered about a different subject"
+              >
+                <div className="flex items-center gap-1.5 text-xs font-semibold mb-1">
+                  <span aria-hidden>✗</span>
+                  <span>Off-topic answers (excluded from synthesis)</span>
+                </div>
+                <div className="text-xs">
+                  <Markdown>{offTopic}</Markdown>
+                </div>
+              </div>
+            )}
             {disagreements && (
               <div
                 className="mt-4 rounded-md border border-amber-300 dark:border-amber-700/60 bg-amber-50 dark:bg-amber-950/30 px-3 py-2 text-amber-900 dark:text-amber-200"

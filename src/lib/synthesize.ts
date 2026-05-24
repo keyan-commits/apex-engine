@@ -393,11 +393,12 @@ function labelFor(a: FanOutAnswer): string {
 // LLM calls in this module.
 export {
   DISAGREEMENT_HEADING,
+  OFF_TOPIC_HEADING,
   splitDisagreements,
   type SynthSplit,
 } from "./synth-format";
 
-import { DISAGREEMENT_HEADING } from "./synth-format";
+import { DISAGREEMENT_HEADING, OFF_TOPIC_HEADING } from "./synth-format";
 
 // Approximate context window for each synth model (input + output combined).
 // Values in tokens. Sourced from each provider's docs as of 2026-05-24.
@@ -459,13 +460,25 @@ export function buildSynthPrompt(
       ? `\n\nSELF-CONSISTENCY: When the models materially disagree on a factual claim, a recommendation, or a numerical value, end your answer with a "${DISAGREEMENT_HEADING}" H2 section. Under it, list each disagreement as a single short bullet: "- <topic>: <Model A> says X; <Model B> says Y." Omit the section entirely (do not include the heading) when answers substantively agree. Do not flag mere stylistic or wording differences.`
       : "";
 
+  // Wave 13 — subject fidelity check. Real failure caught 2026-05-24:
+  // a base model silently substituted "iPhone 14 Pro Max" when the user
+  // asked about "iPhone 17 Pro Max" (knowledge cutoff). The synth
+  // absorbed the wrong-subject content and didn't flag it. This clause
+  // tells the synth to treat subject-substitution as a separate axis
+  // from factual disagreement and EXCLUDE the off-topic answer from
+  // the synthesis instead of merging it in.
+  const subjectFidelityClause =
+    answers.length >= 2
+      ? `\n\nSUBJECT FIDELITY: Cross-check that each model's answer addresses the EXACT subject in the original question — named entities, version numbers, model years, person names. If a model substituted a different subject (e.g. user asked about "iPhone 17 Pro Max" but the model wrote about "iPhone 14 Pro Max", or user asked about "Python 3.13" but the model wrote about "Python 3.10"), DO NOT silently absorb that model's content into your synthesis. Instead:\n1. Add an H2 section exactly titled "${OFF_TOPIC_HEADING}". Under it, list each off-topic answer as a bullet: "- <Model>: answered about <substituted subject> instead of <user's subject>."\n2. EXCLUDE that model's content from your main synthesis. Treat it as if it didn't respond.\n3. Lower your final Confidence score by 20 points (see below) to reflect the smaller effective input set.\nThis is a separate axis from Notable Disagreements (which is about factual contradiction between models that ARE on-topic). If no models went off-topic, omit the section entirely.`
+      : "";
+
   // Wave 12.2 — confidence calibration. The model emits a final
   // "## Confidence" section with a 0-100 score + a one-sentence
   // justification. The UI surfaces this as a badge and offers a
   // "re-run with more models" affordance when the score is low.
-  const confidenceClause = `\n\nCONFIDENCE CALIBRATION: After your answer (and after the optional Notable Disagreements section, if any), append a final H2 section exactly titled "## Confidence". Under that heading, write a single line containing an integer 0-100 followed by a brief one-sentence justification. 0 = pure speculation. 50 = informed guess. 80 = supported by multiple model agreement. 100 = directly answered, well-known, no uncertainty. Be honest — low confidence is more useful than false certainty.`;
+  const confidenceClause = `\n\nCONFIDENCE CALIBRATION: After your answer (and after the optional Notable Disagreements / Off-Topic Answers sections, if any), append a final H2 section exactly titled "## Confidence". Under that heading, write a single line containing an integer 0-100 followed by a brief one-sentence justification. 0 = pure speculation. 50 = informed guess. 80 = supported by multiple model agreement. 100 = directly answered, well-known, no uncertainty. Be honest — low confidence is more useful than false certainty.`;
 
-  return `You are a synthesizer. ${answers.length} AI models were asked the same question.${rolePreamble} Your job: produce a single consolidated best answer by drawing on the strongest, most accurate insights from each response. Resolve contradictions. Cite sources by model name only when their views meaningfully differ. Be direct and useful — no preamble about your role.${consistencyClause}${confidenceClause}${stylePreamble}
+  return `You are a synthesizer. ${answers.length} AI models were asked the same question.${rolePreamble} Your job: produce a single consolidated best answer by drawing on the strongest, most accurate insights from each response. Resolve contradictions. Cite sources by model name only when their views meaningfully differ. Be direct and useful — no preamble about your role.${subjectFidelityClause}${consistencyClause}${confidenceClause}${stylePreamble}
 
 ## Original question
 

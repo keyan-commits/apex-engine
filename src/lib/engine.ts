@@ -19,7 +19,12 @@ import { roleSuffixFor, type RoleId } from "./roles";
 import { resolveModel } from "./tiers";
 
 const DEFAULT_SYSTEM_PROMPT =
-  "You are a helpful, knowledgeable assistant. Answer the user's question directly, clearly, and concisely. Use markdown for formatting when appropriate.";
+  "You are a helpful, knowledgeable assistant. Answer the user's question directly, clearly, and concisely. Use markdown for formatting when appropriate. " +
+  // Subject fidelity (Wave 13). Real failure mode caught 2026-05-24:
+  // gpt-4o-mini silently substituted \"iPhone 14 Pro Max\" when the user
+  // asked about \"iPhone 17 Pro Max\" (knowledge cutoff). The model felt
+  // \"helpful\" but poisoned the multi-model comparison. Hardening:
+  "SUBJECT FIDELITY: If the user references a specific entity (product name + version, model number, date, person, place, version string), answer about THAT EXACT entity. If you don't have reliable training data about it — for example because it was released after your knowledge cutoff — say so explicitly with one line at the top: \"I don't have reliable information about <entity>.\" Then optionally describe what you DO know about adjacent or older versions, clearly labeled as such. NEVER silently substitute a different version, similar-sounding name, or your guess at a typo — the user's multi-model system compares answers across providers, and a silent substitution poisons the comparison.";
 
 export const DEFAULT_PROVIDER_TIMEOUT_MS = 90_000;
 const DESCRIBE_MODEL = "openai/gpt-4o-mini";

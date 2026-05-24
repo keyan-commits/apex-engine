@@ -138,6 +138,50 @@ describe("splitDisagreements — confidence calibration (Wave 12.2)", () => {
     expect(r.confidence).toBeNull();
   });
 
+  it("parses the Off-Topic Answers section as a separate axis from Notable Disagreements (Wave 13)", () => {
+    const text = `Main consolidated answer about iPhone 17 Pro Max.
+
+## Off-Topic Answers
+
+- GPT: answered about iPhone 14 Pro Max instead of iPhone 17 Pro Max.
+
+## Notable Disagreements
+
+- Topic A: Claude says X; Llama says Y.
+
+## Confidence
+
+60 — one model went off-topic so effective input set was 3 of 4.`;
+    const r = splitDisagreements(text);
+    expect(r.body).toBe("Main consolidated answer about iPhone 17 Pro Max.");
+    expect(r.offTopic).toContain("iPhone 14 Pro Max");
+    expect(r.offTopic).not.toContain("Off-Topic Answers");
+    expect(r.disagreements).toContain("Topic A");
+    expect(r.confidence?.score).toBe(60);
+  });
+
+  it("returns null offTopic when the section is absent (Wave 13)", () => {
+    const r = splitDisagreements("Body only.");
+    expect(r.offTopic).toBeNull();
+  });
+
+  it("survives Off-Topic Answers in any order with the other sections (Wave 13)", () => {
+    const text = `Main answer.
+
+## Confidence
+
+40 — both models went off-topic.
+
+## Off-Topic Answers
+
+- GPT: substituted iPhone 14 Pro Max for iPhone 17 Pro Max.`;
+    const r = splitDisagreements(text);
+    expect(r.body).toBe("Main answer.");
+    expect(r.confidence?.score).toBe(40);
+    expect(r.offTopic).toContain("iPhone 14 Pro Max");
+    expect(r.disagreements).toBeNull();
+  });
+
   it("survives reverse ordering (Confidence appears BEFORE Notable Disagreements)", () => {
     // QA review bug: the original regex with `$` anchor swallowed
     // everything after `## Confidence` so the Disagreements section
