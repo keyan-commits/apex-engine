@@ -66,6 +66,38 @@ describe("classify — ambiguity", () => {
   });
 });
 
+describe("classify — Wave 13b regression cases", () => {
+  it("multi-clause recommendation question is NOT simple (real user failure 2026-05-24)", () => {
+    // Old classifier marked this "simple" because "what is" matched
+    // SIMPLE_KEYWORDS, and solo mode then skipped GPT/Gemini/Claude
+    // + the synth. Multi-part recommendation + use-case deserves the
+    // full fan-out.
+    const prompt =
+      "So what is the best product for my iphone 17 pro max? I need to use it for verifying if my mtg cards are legit.";
+    const r = classify(prompt);
+    expect(r.complexity).not.toBe("simple");
+  });
+
+  it("recommendation verb (best / recommend / which) is a complex signal", () => {
+    expect(classify("Which database should I use for time-series data?").complexity).not.toBe(
+      "simple",
+    );
+    expect(classify("Recommend a JS test framework.").complexity).not.toBe("simple");
+  });
+
+  it("brevity alone (without a simple keyword) still doesn't qualify", () => {
+    // 4 words, but no "define"/"translate"/"what is" → medium.
+    const r = classify("Build me an app.");
+    expect(r.complexity).not.toBe("simple");
+  });
+
+  it("genuine narrow lookups still classify as simple", () => {
+    expect(classify("What is the capital of France?").complexity).toBe("simple");
+    expect(classify("Define ergodicity.").complexity).toBe("simple");
+    expect(classify("Translate hello to Japanese.").complexity).toBe("simple");
+  });
+});
+
 describe("classify — signals", () => {
   it("returns at least one signal for non-trivial prompts", () => {
     const r = classify("Compare Tokio vs async-std for a new Rust project.");

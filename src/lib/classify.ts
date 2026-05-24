@@ -37,6 +37,14 @@ const STRONG_COMPLEX_KEYWORDS = [
 // Softer signals — worth 1 point. They still bias complex, but the prompt
 // usually needs a second signal (length, code, multiple questions) to be
 // classified as complex on the strength of these alone.
+//
+// Wave 13b — added recommendation / verification verbs after a real user
+// hit a classifier miss: "So what is the best product for my iPhone 17
+// Pro Max? I need to use it for verifying if my MTG cards are legit." —
+// the old classifier marked this "simple" because "what is" matched, and
+// solo mode then skipped GPT/Gemini/Claude + the synth. Multi-part
+// recommendation + use-case is exactly the kind of question that needs
+// the full fan-out.
 const COMPLEX_KEYWORDS = [
   "compare",
   "contrast",
@@ -50,6 +58,14 @@ const COMPLEX_KEYWORDS = [
   "investigate",
   "step by step",
   "step-by-step",
+  "recommend",
+  "recommended",
+  "best",
+  "verify",
+  "validate",
+  "help me",
+  "i need",
+  "which",
 ];
 
 // Words that signal a quick lookup-style request that the synth+fan-out
@@ -144,12 +160,18 @@ export function classify(prompt: string): Classification {
     }
   }
 
+  // Wave 13b: simple now requires BOTH brevity AND a narrow-lookup
+  // keyword. A long multi-clause recommendation question that happens
+  // to contain "what is" no longer qualifies as simple — it was the
+  // exact failure mode (B2 solo mode skipped 3 of 4 providers + synth
+  // on a recommendation question). Requiring simpleScore >= 2 means
+  // the keyword alone OR brevity alone isn't enough; need both.
   let complexity: Complexity;
   if (complexityScore >= 2) {
     complexity = "complex";
-  } else if (complexityScore === 1 || (simpleScore === 0 && wordCount > 14)) {
+  } else if (complexityScore === 1 || (simpleScore < 2 && wordCount > 14)) {
     complexity = "medium";
-  } else if (simpleScore >= 1) {
+  } else if (simpleScore >= 2) {
     complexity = "simple";
   } else {
     complexity = "medium";
