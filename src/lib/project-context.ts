@@ -22,8 +22,16 @@
 import { readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 
-const CONTEXT_MAX_CHARS = 8_000;
-const PERSONA_ADDENDUM_MAX_CHARS = 4_000;
+// Wave 18 caps were initially 8000 / 4000 — dogfooding the convention
+// on apex-engine itself showed that's tight for projects with 10+ past
+// incidents + a real glossary + real conventions. Bumped to 16000 /
+// 8000 so realistic project context fits without mid-sentence truncation.
+// Total system-prompt overhead per persona at cap: ~28kb (4kb charter +
+// 16kb context + 8kb addendum + ~2kb per-call). For the 5-persona panel
+// that's ~140kb of prompt overhead — ~3.5% of a 4M context window or
+// 14% of a 128k window. Still well within modern budgets.
+const CONTEXT_MAX_CHARS = 16_000;
+const PERSONA_ADDENDUM_MAX_CHARS = 8_000;
 
 // Slot allowlist for project-side persona addenda. Must mirror the
 // server-side charter set in src/personas/. Adding a new persona means

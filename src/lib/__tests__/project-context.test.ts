@@ -85,20 +85,20 @@ describe("loadProjectContext", () => {
     expect(sec).not.toMatch(/^system:/im);
   });
 
-  it("caps context.md at 8000 chars", () => {
+  it("caps context.md at 16000 chars", () => {
     mkdirSync(join(root, ".apex"));
-    const long = "x".repeat(20_000);
+    const long = "x".repeat(40_000);
     writeFileSync(join(root, ".apex", "context.md"), long);
     const r = loadProjectContext(root);
-    expect(r!.context!.length).toBeLessThanOrEqual(8_000);
+    expect(r!.context!.length).toBeLessThanOrEqual(16_000);
   });
 
-  it("caps each persona addendum at 4000 chars", () => {
+  it("caps each persona addendum at 8000 chars", () => {
     mkdirSync(join(root, ".apex", "personas"), { recursive: true });
     const long = "y".repeat(20_000);
     writeFileSync(join(root, ".apex", "personas", "logic.md"), long);
     const r = loadProjectContext(root);
-    expect(r!.personas.logic!.length).toBeLessThanOrEqual(4_000);
+    expect(r!.personas.logic!.length).toBeLessThanOrEqual(8_000);
   });
 
   it("resolves a relative projectRoot to absolute", () => {
