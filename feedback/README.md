@@ -30,6 +30,14 @@ The published GitHub Issue title is prefixed with `[<sourceProject>]`
 so triage sees the source at a glance — that's the visible evidence
 that cross-instance reporting is actually flowing.
 
+## The one rule, for every Claude Code session in every project
+
+> **Use `apex_report`. Do NOT call `gh issue create` against the apex-engine repo directly.**
+
+Direct `gh` filings skip the `feedback` label, the `[<sourceProject>] [<kind>]` title convention, the metadata block, the secret-redaction pass, and the local audit trail. `pnpm feedback:status` won't see them — they're invisible to triage until someone manually notices.
+
+If `apex_report` isn't in your MCP tool list, the project you're working in doesn't have apex-engine MCP wired up. The one-time fix: run `pnpm setup` in the apex-engine repo on the same machine. After that, every Claude Code session — in every project on that machine — can call `apex_report`.
+
 ## How to submit feedback
 
 Three entry points, all produce the same record shape:

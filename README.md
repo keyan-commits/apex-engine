@@ -189,13 +189,31 @@ pnpm mcp:http   # keep running in a separate terminal
 claude mcp add apex-engine -- /absolute/path/to/apex-engine/bin/apex-engine-mcp
 ```
 
-## Cross-instance feedback
+## Filing bugs and feature requests
 
-Every apex-engine instance (UI, MCP, API) can record bug reports and improvement suggestions to a local outbox. Reports auto-flush to GitHub Issues every 30 min via the running MCP server (or via the standalone `pnpm feedback:watch` daemon). Manual flush available with `pnpm feedback:flush` (requires `gh` CLI authenticated). See [`feedback/README.md`](feedback/README.md) for the full schema + privacy rules.
+> **Rule of thumb: use `apex_report` (or the in-app Feedback button). Do NOT call `gh issue create` against the apex-engine repo directly.**
 
-- **UI:** "Feedback" button in the header.
-- **MCP:** `apex_report` tool — call it from any Claude Code session, including ones outside the apex-engine project. The report lands in apex-engine's own `data/feedback/outbox/`. **Pass `sourceProject`** with the basename of your current project so the resulting GitHub Issue title is prefixed with it — that's the visible evidence cross-instance reporting is flowing.
-- **HTTP:** `POST /api/feedback`.
+Direct `gh` filings bypass the `feedback` label, the `[<sourceProject>] [<kind>]` title convention, the metadata block, the secret-redaction pass, and the local audit trail — `pnpm feedback:status` won't surface them, and triage misses them. (`feedback:status` now also lists unlabeled open issues with a warning, but that's a backstop, not a substitute.)
+
+**Three correct entry points — pick whichever fits the moment:**
+
+| From | How | When |
+|---|---|---|
+| **UI** | Click the **Feedback** button in the apex-engine header. | You're using the web app and noticed something. |
+| **MCP** (`apex_report`) | Call the tool from any Claude Code session, in any project. Pass `sourceProject` with the project basename. | You (or another Claude session) discovered an apex-engine bug while working on a downstream project. **This is the cross-instance channel.** |
+| **HTTP** | `POST /api/feedback` with `{kind, title, description, sourceProject}`. | Scripted / non-CC integrations. |
+
+All three produce the same JSON record under `data/feedback/outbox/`. Auto-flush converts records to GitHub Issues every 30 min; `pnpm feedback:flush` does the same on demand.
+
+**If `apex_report` isn't in your MCP tool list (downstream project, fresh laptop):** run `pnpm setup` in the apex-engine repo on that machine. One-time. After that, every CC session — in every project on that machine — can call `apex_report`.
+
+Auto-reports also fire from inside apex-engine's own code paths:
+
+- `recordAutoBug` on provider stream errors, synth errors, history save failures (1-hour throttle + escalation at counts 5/25/100).
+- `recordAutoImprovement` from 5 session-aware detectors (solo-mode override clicks, provider failure clusters, repeated synth disagreements with the same model, cache cold-clusters, sustained alternative-synth selection).
+- `pnpm qa:check` and `pnpm security:check` write a feedback record on any failing step.
+
+See [`feedback/README.md`](feedback/README.md) for the full schema, privacy rules, and triage rhythm.
 
 Auto-reports fire from inside apex-engine's own code paths:
 

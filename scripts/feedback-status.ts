@@ -64,24 +64,25 @@ function ghAvailable(): boolean {
   return r.status === 0;
 }
 
-function fetchOpenIssues(): { issues: GhIssue[]; error: string | null } {
+function fetchOpenIssues(opts: { label?: string }): { issues: GhIssue[]; error: string | null } {
   try {
-    const out = execFileSync(
-      "gh",
-      [
-        "issue",
-        "list",
-        "--state",
-        "open",
-        "--label",
-        "feedback",
-        "--limit",
-        "30",
-        "--json",
-        "number,title,state,url,labels,createdAt",
-      ],
-      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
-    );
+    const args = [
+      "issue",
+      "list",
+      "--state",
+      "open",
+      "--limit",
+      "30",
+      "--json",
+      "number,title,state,url,labels,createdAt",
+    ];
+    if (opts.label) {
+      args.push("--label", opts.label);
+    }
+    const out = execFileSync("gh", args, {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
     return { issues: JSON.parse(out) as GhIssue[], error: null };
   } catch (err) {
     return {
@@ -136,7 +137,7 @@ function main() {
     suggestActions(pendingFiles.length, []);
     return;
   }
-  const { issues, error } = fetchOpenIssues();
+  const { issues, error } = fetchOpenIssues({ label: "feedback" });
   if (error) {
     console.log(`⚠ gh issue list failed: ${error}`);
     suggestActions(pendingFiles.length, []);
@@ -154,6 +155,31 @@ function main() {
         `  #${issue.number} (${kindOf(issue)}, ${age})  ${issue.title}`,
       );
       console.log(`    ${issue.url}`);
+    }
+  }
+
+  // Wave 18-doc — surface ANY other open issues too, even unlabelled
+  // ones. Anything filed via raw `gh issue create` (bypassing the
+  // apex_report → flush pipeline) lands here with no `feedback` label
+  // and would otherwise be invisible to triage. Real incident: Wave 18
+  // proposal #21 sat unseen because it was filed directly.
+  const { issues: allOpen, error: allErr } = fetchOpenIssues({});
+  if (!allErr) {
+    const knownNumbers = new Set(issues.map((i) => i.number));
+    const orphans = allOpen.filter((i) => !knownNumbers.has(i.number));
+    if (orphans.length > 0) {
+      console.log("");
+      console.log(
+        `⚠ ${orphans.length} open issue${orphans.length === 1 ? "" : "s"} NOT labelled \`feedback\` (filed directly via gh, bypassing apex_report):`,
+      );
+      for (const issue of orphans) {
+        const age = formatRelative(Date.parse(issue.createdAt));
+        console.log(`  #${issue.number} (${age})  ${issue.title}`);
+        console.log(`    ${issue.url}`);
+      }
+      console.log(
+        `  → add the \`feedback\` label so future \`pnpm feedback:status\` runs surface them.`,
+      );
     }
   }
 
