@@ -58,6 +58,13 @@ export type FanOutOptions = {
   // about "MCP" gets sub-agents that interpret MCP as "meeting
   // capture platform" instead of "Model Context Protocol".
   context?: string;
+  // Wave 18b — per-provider system prompt override. When a key is set,
+  // that provider receives the override verbatim (no role-suffix
+  // composition, no context-block prepend). Used by the persona-panel
+  // review tools to give each fan-out slot a distinct charter. Providers
+  // not in the map fall back to the default systemPrompt + role-suffix
+  // pipeline.
+  systemPromptByProvider?: Partial<Record<Provider, string>>;
 };
 
 export type StreamUsage = {
@@ -145,8 +152,14 @@ export function fanOut(prompt: string, opts: FanOutOptions = {}): FanOutItem[] {
   return activeProviders.map((p) => {
     const { tier, model } = resolveModel(p);
     const roleId = (opts.roles?.[p] ?? null) as RoleId | null;
-    const roleSuffix = roleSuffixFor(p, opts.roles);
-    const sysForProvider = composeSystemPrompt(sys, roleSuffix);
+    const overridePrompt = opts.systemPromptByProvider?.[p];
+    // Wave 18b — when a per-provider override is set, use it verbatim;
+    // the persona charter is already self-contained and includes any
+    // project-context block via composePersonaPrompt(). Otherwise fall
+    // back to the global systemPrompt + role-suffix composition path.
+    const sysForProvider = overridePrompt
+      ? overridePrompt
+      : composeSystemPrompt(sys, roleSuffixFor(p, opts.roles));
     const { stream, usage } = streamFor(
       p,
       model,

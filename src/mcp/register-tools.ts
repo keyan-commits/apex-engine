@@ -15,6 +15,15 @@ import {
   nodesToBriefing,
 } from "@/lib/subagents";
 import { synthesize, type FanOutAnswer } from "@/lib/synthesize";
+import {
+  loadProjectContext,
+  formatProjectContextBlock,
+  type ProjectContext,
+} from "@/lib/project-context";
+import {
+  buildPanelSystemPrompts,
+  REVIEW_PANEL_ASSIGNMENTS,
+} from "@/lib/personas";
 import { webSearch, formatWebSearchAsMarkdown } from "@/lib/web-search";
 
 // Shared MCP tool registration — called by BOTH the stdio entry point
@@ -124,6 +133,33 @@ const CONTEXT_MAX_CHARS = 2000;
 const DIRECTIVE_RE =
   /^\s*(?:you are\b|act as\b|pretend to be\b|ignore (?:previous|all|prior)|disregard\b|forget\b|system:|new (?:system )?(?:prompt|instructions):|you must\b|always respond\b)/i;
 
+// Wave 18a — shared zod fragment for the `projectRoot` arg. Pointed at the
+// calling consumer's project root so apex can read <projectRoot>/.apex/.
+// Pass the absolute path; relative paths are resolved against process.cwd()
+// of the MCP server, which is almost never what callers want.
+const projectRootArg = z
+  .string()
+  .optional()
+  .describe(
+    "Absolute path to your project's root (e.g. \"/Users/.../lfm\"). When set, apex reads <projectRoot>/.apex/context.md and <projectRoot>/.apex/personas/<slot>.md to ground this call in your project's standing context — committed files, not maker-supplied per-call. Strongly recommended for any review of project code. See feedback/README.md for the .apex/ convention.",
+  );
+
+// Compose the project-standing context block with the caller-supplied
+// per-call `context` arg for tools that DON'T use the persona panel
+// (apex_synthesize, apex_fanout, apex_decompose). Project block first
+// (higher trust, durable); caller block second (lower trust, ephemeral).
+function composeContextForNonPanelTool(
+  pc: ProjectContext | null,
+  callerContext: string | undefined,
+): string | undefined {
+  const projectBlock = formatProjectContextBlock(pc);
+  const caller = callerContext?.trim() ?? "";
+  if (!projectBlock && !caller) return undefined;
+  if (!projectBlock) return caller;
+  if (!caller) return projectBlock;
+  return `${projectBlock}\n\n[PER-CALL CALLER CONTEXT — ephemeral, lower trust than the project standing context above.]\n${caller}\n[END PER-CALL CALLER CONTEXT]`;
+}
+
 function sanitizeContextBlock(raw: string | undefined): string {
   if (!raw) return "";
   const cleaned = raw
@@ -135,19 +171,28 @@ function sanitizeContextBlock(raw: string | undefined): string {
   return cleaned.slice(0, CONTEXT_MAX_CHARS);
 }
 
+// Wave 18c — dissent-preserving synth for maker-checker review. The
+// generic synth dedupes and smooths; that is the WRONG behavior for
+// a review panel. A lone reviewer raising a P0 must block, not get
+// averaged into a 4-to-1 "looks fine."
 const CODE_REVIEW_SYNTH_SYSTEM_PROMPT = [
-  "You are synthesizing multiple expert code reviews into a single canonical review.",
+  "You are synthesizing reviews from a maker-checker persona panel into a single canonical review. This is NOT generic synthesis — your job is to PRESERVE DISSENT, not resolve it.",
   "",
-  "Rules:",
-  "1. **Dedupe by root cause.** If two reviewers flag the same underlying bug (even with different wording or line numbers), merge them into ONE finding. Preserve the highest severity rating across reviewers. List the line numbers each reviewer cited.",
-  "2. **Rank by severity** (Critical → High → Medium → Low).",
-  "3. **Drop low-confidence noise**: if only ONE reviewer flagged a Medium-or-below issue AND it isn't obviously correct from the code, omit it.",
-  "4. **Do not invent issues**. If no reviewer reported a class of issue, do not add it.",
+  "Rules — strict order of precedence:",
+  "",
+  "1. **Preserve every blocking finding.** If ANY reviewer rates a finding Critical or High, it surfaces in the output at THAT severity. You may NOT downgrade severity because other reviewers disagree. The panel is structurally diverse on purpose; a finding only one persona sees is exactly what the panel exists to surface.",
+  "2. **Preserve every INSUFFICIENT_INPUT verdict.** If a persona refused to review because its data-shape mandate wasn't satisfied (top-level `## INSUFFICIENT_INPUT`), surface it as a blocking finding under `## Insufficient Input`. The maker did not give the reviewer what it needs; the review is not complete.",
+  "3. **Dedupe ONLY on same root cause.** If two reviewers flag the same underlying defect with different wording or different line numbers, merge them into ONE finding — and preserve the HIGHEST severity any reviewer gave it. Do NOT merge findings that share a surface symptom but have different root causes.",
+  "4. **Never invent.** If no reviewer reported a class of issue, do not add it. Your job is to combine what the reviewers said, not to add your own analysis.",
+  "5. **Attribute findings to the persona that raised them.** Each finding's `Location` field MUST cite which persona(s) (logic / approach / security / business-logic / qa) raised it.",
   "",
   "Output structure (use these headings verbatim):",
   "",
   "## Summary",
-  "1-3 sentences: highest-severity findings, overall posture.",
+  "Lead with the total count of unique findings and the count of personas that emitted `## INSUFFICIENT_INPUT`. Then 1-2 sentences on the highest-severity findings.",
+  "",
+  "## Insufficient Input",
+  "(omit if no persona raised it) — list each persona that refused with the named missing items. Treat this section as BLOCKING regardless of other findings.",
   "",
   "## Detailed Findings",
   "(omit any severity group with zero findings)",
@@ -161,11 +206,11 @@ const CODE_REVIEW_SYNTH_SYSTEM_PROMPT = [
   "### Low",
   "...",
   "",
-  "Each finding inside a group uses sub-headings: **Severity**, **Location** (cite all line ranges reviewers gave), **Explanation**, **Recommended Fix**.",
+  "Each finding uses: **Severity**, **Personas** (which persona(s) raised it), **Location**, **Explanation**, **Recommended Fix**.",
   "",
   "## Overall Risk Rating",
-  "One of: **P0** (stop-the-line; do NOT deploy), **P1** (fix before merge), **P2** (fix in backlog), **P3** (informational only).",
-  "Justify in one sentence.",
+  "One of: **P0** (stop-the-line; do NOT deploy — auto if ANY Critical OR any Insufficient Input), **P1** (fix before merge — auto if ANY High), **P2** (fix in backlog — Mediums only), **P3** (informational only — Lows only or clean).",
+  "Justify in one sentence. The rating MUST follow the rules above mechanically; do not soften.",
 ].join("\n");
 
 type CollectedAnswer = {
@@ -195,12 +240,20 @@ async function collectStream(item: FanOutItem): Promise<CollectedAnswer> {
 
 async function runFanOut(
   prompt: string,
-  opts: { includeClaude: boolean; ensembleId?: string; context?: string },
+  opts: {
+    includeClaude: boolean;
+    ensembleId?: string;
+    context?: string;
+    systemPromptByProvider?: Partial<Record<Provider, string>>;
+  },
 ): Promise<CollectedAnswer[]> {
   const ensemble = opts.ensembleId ? findEnsemble(opts.ensembleId) : undefined;
   const items = fanOut(prompt, {
     roles: ensemble?.assignments,
     context: opts.context,
+    ...(opts.systemPromptByProvider
+      ? { systemPromptByProvider: opts.systemPromptByProvider }
+      : {}),
   });
   const filtered = opts.includeClaude
     ? items
@@ -292,20 +345,23 @@ export function registerAllTools(server: McpServer): void {
         .string()
         .optional()
         .describe(
-          "Disambiguation context from YOUR (caller's) session — a short glossary or project description that apex-engine prepends to each sub-agent's system prompt. Use it whenever the prompt contains acronyms, project names, version numbers, or domain-specific terms an outside model might misinterpret. Example: \"transcribe-meeting is an MCP server. MCP = Model Context Protocol (Anthropic's protocol for LLM tool calls), NOT a meeting platform. v0.3.0 was released last week.\" Capped at 2000 chars; lines that look like system-prompt directives are stripped.",
+          "Disambiguation context from YOUR (caller's) session — a short glossary or project description that apex-engine prepends to each sub-agent's system prompt. Use it whenever the prompt contains acronyms, project names, version numbers, or domain-specific terms an outside model might misinterpret. Example: \"transcribe-meeting is an MCP server. MCP = Model Context Protocol (Anthropic's protocol for LLM tool calls), NOT a meeting platform. v0.3.0 was released last week.\" Capped at 2000 chars; lines that look like system-prompt directives are stripped. For durable project context, prefer `.apex/context.md` via the `projectRoot` arg below.",
         ),
+      projectRoot: projectRootArg,
     },
-    async ({ prompt, includeClaude, ensembleId, context }) => {
+    async ({ prompt, includeClaude, ensembleId, context, projectRoot }) => {
       // Wave 11 recursion-guard adjustment: when 2+ non-Claude providers
       // are exhausted, ignore the default-off behavior and bring Claude
       // into the fan-out anyway. Without this the user gets a fan-out
       // with 0-1 valid answers and a useless synth.
       const effectiveIncludeClaude =
         includeClaude || exhaustedNonClaudeCount() >= 2;
+      const pc = loadProjectContext(projectRoot);
+      const composedContext = composeContextForNonPanelTool(pc, context);
       const answers = await runFanOut(prompt, {
         includeClaude: effectiveIncludeClaude,
         ensembleId,
-        context,
+        context: composedContext,
       });
       try {
         saveHistory({
@@ -345,11 +401,17 @@ export function registerAllTools(server: McpServer): void {
         .string()
         .optional()
         .describe(
-          "Disambiguation context from your session — see apex_fanout's context param for guidance.",
+          "Disambiguation context from your session — see apex_fanout's context param for guidance. For durable project context, prefer `.apex/context.md` via the `projectRoot` arg below.",
         ),
+      projectRoot: projectRootArg,
     },
-    async ({ prompt, includeClaude, synthesizerId, context }) => {
-      const answers = await runFanOut(prompt, { includeClaude, context });
+    async ({ prompt, includeClaude, synthesizerId, context, projectRoot }) => {
+      const pc = loadProjectContext(projectRoot);
+      const composedContext = composeContextForNonPanelTool(pc, context);
+      const answers = await runFanOut(prompt, {
+        includeClaude,
+        context: composedContext,
+      });
       const synthInput: FanOutAnswer[] = answers.map((a) => ({
         provider: a.provider,
         text: a.text,
@@ -360,15 +422,25 @@ export function registerAllTools(server: McpServer): void {
       let synthText = "";
       let synthError: string | null = null;
       try {
-        // Compose caller-supplied context into the synth's systemPrompt
-        // so the synthesizer sees the same disambiguation block the
-        // base fan-out received. Wave 17c: sanitize directive-shaped
-        // lines (the schema docs promised this; previously not
-        // implemented — security review caught the dead-letter).
-        const sanitizedContext = sanitizeContextBlock(context);
-        const synthSystemPrompt = sanitizedContext
-          ? `[Context from calling session]\n${sanitizedContext}\n[End context]`
-          : undefined;
+        // Wave 18a — the synth sees the SAME composed context the
+        // base fan-out received (project block + sanitized caller
+        // context). Wave 17c sanitize call removed from this path
+        // because composeContextForNonPanelTool already composes the
+        // pre-sanitized project block; we still sanitize the caller's
+        // ephemeral portion here.
+        const sanitizedCaller = sanitizeContextBlock(context);
+        const projectBlock = formatProjectContextBlock(pc);
+        const synthSystemPrompt =
+          projectBlock || sanitizedCaller
+            ? [
+                projectBlock,
+                sanitizedCaller
+                  ? `[Context from calling session]\n${sanitizedCaller}\n[End context]`
+                  : "",
+              ]
+                .filter(Boolean)
+                .join("\n\n")
+            : undefined;
         for await (const chunk of synthesize(prompt, synthInput, {
           synthesizerId,
           ...(synthSystemPrompt ? { systemPrompt: synthSystemPrompt } : {}),
@@ -419,11 +491,14 @@ export function registerAllTools(server: McpServer): void {
         .string()
         .optional()
         .describe(
-          "Disambiguation context from YOUR (caller's) session — fed to BOTH the planner AND each mini fan-out. Even more important here than in apex_fanout/synthesize because sub-questions land further from the original. Example: \"transcribe-meeting is an MCP server. MCP = Model Context Protocol (Anthropic, NOT a meeting platform). Current version 0.3.0 adds Whisper integration.\" Capped at 2000 chars.",
+          "Disambiguation context from YOUR (caller's) session — fed to BOTH the planner AND each mini fan-out. Even more important here than in apex_fanout/synthesize because sub-questions land further from the original. Example: \"transcribe-meeting is an MCP server. MCP = Model Context Protocol (Anthropic, NOT a meeting platform). Current version 0.3.0 adds Whisper integration.\" Capped at 2000 chars. For durable project context, prefer `.apex/context.md` via the `projectRoot` arg below.",
         ),
+      projectRoot: projectRootArg,
     },
-    async ({ prompt, context }) => {
-      const plan = await decompose(prompt, undefined, context);
+    async ({ prompt, context, projectRoot }) => {
+      const pc = loadProjectContext(projectRoot);
+      const composedContext = composeContextForNonPanelTool(pc, context);
+      const plan = await decompose(prompt, undefined, composedContext);
       if (!plan.ok) {
         return {
           content: [
@@ -431,7 +506,7 @@ export function registerAllTools(server: McpServer): void {
           ],
         };
       }
-      await executeSubagents(plan.nodes, () => {}, undefined, context);
+      await executeSubagents(plan.nodes, () => {}, undefined, composedContext);
       const briefing = nodesToBriefing(plan.nodes);
       return {
         content: [{ type: "text", text: withFlushNotice(briefing) }],
@@ -582,7 +657,7 @@ export function registerAllTools(server: McpServer): void {
 
   server.tool(
     "apex_code_review",
-    "**Project-agnostic Mixture-of-Agents code review.** Pass arbitrary code (any language) + optional focus question; apex-engine fans the review out to GPT-4o-mini, Llama 3.3 70B, Gemini Flash, DeepSeek-chat, AND Claude (default ON for review tools — quality matters), then a synth pass dedupes findings, ranks by severity, and assigns an overall risk rating (P0 stop-the-line / P1 fix-before-merge / P2 backlog / P3 informational). Use this from ANY Claude Code session reviewing ANY codebase — not just apex-engine. For security-specific audits, use the sibling tool `apex_security_review`. Capped at 8000 chars input; split per-file/per-function for larger inputs.",
+    "**Project-agnostic Mixture-of-Agents code review via the 5-persona maker-checker panel.** Each provider gets a distinct charter: Claude=business-logic (does the code implement the right rule?), GPT=security, Llama=logic, Gemini=approach, DeepSeek=qa/tests. The synth uses a dissent-preserving pass that PRESERVES any blocking finding from any persona (the panel exists precisely to surface single-reviewer P0s; smoothing dissent would defeat the design). On INSUFFICIENT_INPUT verdicts from any persona, the overall risk rating is forced to P0 — the maker did not give the reviewer what it needs.\n\n**Pass `projectRoot`** to ground the review in your project's standing context: apex reads `<projectRoot>/.apex/context.md` and the per-persona addenda at `<projectRoot>/.apex/personas/<slot>.md` (slots: logic / approach / security / business-logic / qa) so each persona has project-specific skills, glossary, past-incident patterns, and source pointers — committed to your repo, not maker-supplied per call.\n\nUse this from ANY Claude Code session reviewing ANY codebase. For security-specific audits, use the sibling tool `apex_security_review`. Capped at 8000 chars input; split per-file/per-function for larger inputs.",
     {
       code: z
         .string()
@@ -604,16 +679,17 @@ export function registerAllTools(server: McpServer): void {
         .string()
         .optional()
         .describe(
-          "Disambiguation context from your session — short glossary or project description prepended to the synth's system prompt. Use it for project-specific acronyms/terms. Capped at 2000 chars; directive-shaped lines are stripped.",
+          "Ephemeral per-call disambiguation prepended to each persona's system prompt at the LOWEST trust tier (below charter, below `.apex/context.md`, below the per-persona addendum). For durable project context, prefer `.apex/context.md` via `projectRoot`. Capped at 2000 chars; directive-shaped lines are stripped.",
         ),
+      projectRoot: projectRootArg,
       includeClaude: z
         .boolean()
         .default(true)
         .describe(
-          "Include Claude in the fan-out. Default: true for review tools (quality > subscription spend). Set false to save on the Claude Max-5x quota when doing high-throughput batch reviews.",
+          "Include Claude in the fan-out. Default: true. Claude is the business-logic persona in the default panel assignment — disabling it drops the panel's most catch-the-wrong-rule lens. Set false only when running high-throughput batch reviews.",
         ),
     },
-    async ({ code, focus, language, context, includeClaude }) => {
+    async ({ code, focus, language, context, projectRoot, includeClaude }) => {
       const clip = clipCodeOrError(code);
       if (!clip.ok) {
         return { content: [{ type: "text", text: withFlushNotice(clip.reason) }] };
@@ -626,18 +702,37 @@ export function registerAllTools(server: McpServer): void {
         reviewKind: "code",
         nonce,
       });
-      const answers = await runFanOut(reviewPrompt, { includeClaude, context });
+      const pc = loadProjectContext(projectRoot);
+      const panel = buildPanelSystemPrompts(pc, context);
+      const answers = await runFanOut(reviewPrompt, {
+        includeClaude,
+        systemPromptByProvider: panel,
+      });
       const synthInput: FanOutAnswer[] = answers.map((a) => ({
         provider: a.provider,
         text: a.text,
         error: a.error ?? undefined,
       }));
 
-      const sanitizedContext = sanitizeContextBlock(context);
-      const synthContextBlock = sanitizedContext
-        ? `[Context from calling session]\n${sanitizedContext}\n[End context]\n\n`
-        : "";
-      const synthSystemPrompt = `${synthContextBlock}${CODE_REVIEW_SYNTH_SYSTEM_PROMPT}`;
+      // Wave 18a — the synth sees the same project-standing context the
+      // panel members saw, plus an explicit reminder that each fan-out
+      // answer came from a distinct persona (so the dissent-preserving
+      // rules in CODE_REVIEW_SYNTH_SYSTEM_PROMPT can attribute findings).
+      const projectBlock = formatProjectContextBlock(pc);
+      const sanitizedCaller = sanitizeContextBlock(context);
+      const personaLegend = Object.entries(REVIEW_PANEL_ASSIGNMENTS)
+        .map(([provider, slot]) => `- ${provider} → ${slot}`)
+        .join("\n");
+      const synthSystemPrompt = [
+        projectBlock,
+        sanitizedCaller
+          ? `[Context from calling session]\n${sanitizedCaller}\n[End context]`
+          : "",
+        `[PERSONA PANEL ASSIGNMENTS]\n${personaLegend}\n[END PERSONA PANEL ASSIGNMENTS]`,
+        CODE_REVIEW_SYNTH_SYSTEM_PROMPT,
+      ]
+        .filter(Boolean)
+        .join("\n\n");
 
       let synthText = "";
       let synthError: string | null = null;
@@ -669,7 +764,7 @@ export function registerAllTools(server: McpServer): void {
 
   server.tool(
     "apex_security_review",
-    "**Project-agnostic Mixture-of-Agents security audit.** Pass arbitrary code (any language) and apex-engine fans a security-focused review across 5 models including Claude (default ON), then synths the results — deduped, severity-ranked, with an overall P0-P3 risk rating. Default focus areas: auth/authz bugs, injection (SQL/cmd/template), unsafe deserialization, secrets in source, weak crypto, missing validation at trust boundaries, OWASP-top-10, supply-chain risk. For general (non-security-focused) code review use `apex_code_review`. For apex-engine's own self-check security gate, use `apex_self_security_check`. Capped at 8000 chars input.",
+    "**Project-agnostic Mixture-of-Agents security audit via the 5-persona maker-checker panel.** Same panel as apex_code_review (Claude=business-logic, GPT=security, Llama=logic, Gemini=approach, DeepSeek=qa); the panel composition is intentional — security review benefits from cross-lens analysis. The synth uses the same dissent-preserving pass: any blocking finding from any persona surfaces; INSUFFICIENT_INPUT verdicts force the overall rating to P0.\n\n**Pass `projectRoot`** to ground the audit in your project's threat model: apex reads `<projectRoot>/.apex/personas/security.md` (PII categories, past-incident patterns, allow/deny policies, secret rotation runbook pointers) and the other persona addenda. The security persona's data-shape mandate is strict — give it the trust-boundary diagram, the credential inventory, and the dep manifest diff, or it will refuse to review.\n\nFor general code review use `apex_code_review`. For apex-engine's own self-check security gate, use `apex_self_security_check`. Capped at 8000 chars input.",
     {
       code: z
         .string()
@@ -691,8 +786,9 @@ export function registerAllTools(server: McpServer): void {
         .string()
         .optional()
         .describe(
-          "Disambiguation context from your session. Capped at 2000 chars; directive-shaped lines are stripped.",
+          "Ephemeral per-call disambiguation. For durable project threat-model + PII categories, prefer `<projectRoot>/.apex/personas/security.md`. Capped at 2000 chars; directive-shaped lines are stripped.",
         ),
+      projectRoot: projectRootArg,
       includeClaude: z
         .boolean()
         .default(true)
@@ -700,7 +796,7 @@ export function registerAllTools(server: McpServer): void {
           "Include Claude in the fan-out. Default: true (quality matters for security work).",
         ),
     },
-    async ({ code, focus, language, context, includeClaude }) => {
+    async ({ code, focus, language, context, projectRoot, includeClaude }) => {
       const clip = clipCodeOrError(code);
       if (!clip.ok) {
         return { content: [{ type: "text", text: withFlushNotice(clip.reason) }] };
@@ -713,18 +809,33 @@ export function registerAllTools(server: McpServer): void {
         reviewKind: "security",
         nonce,
       });
-      const answers = await runFanOut(reviewPrompt, { includeClaude, context });
+      const pc = loadProjectContext(projectRoot);
+      const panel = buildPanelSystemPrompts(pc, context);
+      const answers = await runFanOut(reviewPrompt, {
+        includeClaude,
+        systemPromptByProvider: panel,
+      });
       const synthInput: FanOutAnswer[] = answers.map((a) => ({
         provider: a.provider,
         text: a.text,
         error: a.error ?? undefined,
       }));
 
-      const sanitizedContext = sanitizeContextBlock(context);
-      const synthContextBlock = sanitizedContext
-        ? `[Context from calling session]\n${sanitizedContext}\n[End context]\n\n`
-        : "";
-      const synthSystemPrompt = `${synthContextBlock}${CODE_REVIEW_SYNTH_SYSTEM_PROMPT}`;
+      const projectBlock = formatProjectContextBlock(pc);
+      const sanitizedCaller = sanitizeContextBlock(context);
+      const personaLegend = Object.entries(REVIEW_PANEL_ASSIGNMENTS)
+        .map(([provider, slot]) => `- ${provider} → ${slot}`)
+        .join("\n");
+      const synthSystemPrompt = [
+        projectBlock,
+        sanitizedCaller
+          ? `[Context from calling session]\n${sanitizedCaller}\n[End context]`
+          : "",
+        `[PERSONA PANEL ASSIGNMENTS]\n${personaLegend}\n[END PERSONA PANEL ASSIGNMENTS]`,
+        CODE_REVIEW_SYNTH_SYSTEM_PROMPT,
+      ]
+        .filter(Boolean)
+        .join("\n\n");
 
       let synthText = "";
       let synthError: string | null = null;
