@@ -18,8 +18,14 @@ import { synthesize, type FanOutAnswer } from "@/lib/synthesize";
 import {
   loadProjectContext,
   formatProjectContextBlock,
+  PERSONA_SLOTS,
+  type PersonaSlot,
   type ProjectContext,
 } from "@/lib/project-context";
+import {
+  bootstrapProjectContext,
+  formatBootstrapReport,
+} from "@/lib/project-context-bootstrap";
 import {
   buildPanelSystemPrompts,
   REVIEW_PANEL_ASSIGNMENTS,
@@ -46,6 +52,7 @@ export const REGISTERED_TOOL_NAMES = [
   "apex_security_review",
   "apex_history_search",
   "apex_web_search",
+  "apex_bootstrap_project",
 ];
 
 const CODE_REVIEW_MAX_CHARS = 8_000;
@@ -143,6 +150,51 @@ const projectRootArg = z
   .describe(
     "Absolute path to your project's root (e.g. \"/Users/.../lfm\"). When set, apex reads <projectRoot>/.apex/context.md and <projectRoot>/.apex/personas/<slot>.md to ground this call in your project's standing context — committed files, not maker-supplied per-call. Strongly recommended for any review of project code. See feedback/README.md for the .apex/ convention.",
   );
+
+// Wave 18d — discovery nudge. When a review tool is called without
+// projectRoot (or with a projectRoot but no .apex/ populated), surface
+// a banner telling the caller to run apex_bootstrap_project + fill in
+// the templates. The other-Mac CC session learns about the convention
+// from this output, not from a CLAUDE.md instruction it might not have.
+function bootstrapNudgeFor(
+  projectRoot: string | undefined,
+  pc: ProjectContext | null,
+): string | null {
+  if (!projectRoot) {
+    return [
+      "💡 **Tip — better-grounded review available.** This review used the bare server-side persona charters without project-specific context. For maker-checker review of a real project, pass `projectRoot` (absolute path to the project's root) AND scaffold the project's `.apex/` convention first:",
+      "",
+      "  1. Call `apex_bootstrap_project({ projectRoot: \"<absolute-path>\" })` to write 6 template MDs.",
+      "  2. Open each generated `.apex/*.md` file (Read + Edit) and fill in based on what you know about the project (its CLAUDE.md, README, spec docs, sample source).",
+      "  3. Re-run this review with `projectRoot` set to the same path.",
+      "",
+      "Without `projectRoot`, the panel still works — it just can't catch the bugs that need project-specific glossary, past-incident patterns, or domain rules to detect.",
+    ].join("\n");
+  }
+  if (!pc) {
+    return `💡 **Tip.** \`projectRoot=${projectRoot}\` was supplied but the path either doesn't exist or is not a directory. Check the path; if correct, call \`apex_bootstrap_project({ projectRoot: "${projectRoot}" })\` to scaffold the .apex/ convention.`;
+  }
+  const missingPersonas: PersonaSlot[] = PERSONA_SLOTS.filter(
+    (s) => !pc.personas[s],
+  );
+  const hasContext = pc.context != null;
+  if (!hasContext && missingPersonas.length === PERSONA_SLOTS.length) {
+    return [
+      `💡 **Tip — \`${projectRoot}/.apex/\` is empty or not populated.** Scaffold templates with:`,
+      "",
+      `  \`apex_bootstrap_project({ projectRoot: "${projectRoot}" })\``,
+      "",
+      "Then open each generated `.apex/*.md` file and fill in based on this project's CLAUDE.md / README / sample source. The review just ran against the bare charters; project-grounding will sharpen it significantly.",
+    ].join("\n");
+  }
+  if (!hasContext || missingPersonas.length > 0) {
+    const missing: string[] = [];
+    if (!hasContext) missing.push(".apex/context.md");
+    for (const s of missingPersonas) missing.push(`.apex/personas/${s}.md`);
+    return `💡 **Tip — \`${projectRoot}/.apex/\` is partially set up.** Missing: ${missing.join(", ")}. Run \`apex_bootstrap_project({ projectRoot: "${projectRoot}" })\` to scaffold any missing templates (won't overwrite existing files), then fill them in.`;
+  }
+  return null;
+}
 
 // Compose the project-standing context block with the caller-supplied
 // per-call `context` arg for tools that DON'T use the persona panel
@@ -749,15 +801,12 @@ export function registerAllTools(server: McpServer): void {
       const synthSection = synthError
         ? `# Code Review (synth failed)\n\n_Error: ${synthError}_`
         : `# Code Review — Synthesized\n\n${synthText.trim()}`;
+      const nudge = bootstrapNudgeFor(projectRoot, pc);
+      const body = nudge
+        ? `${nudge}\n\n---\n\n${synthSection}\n\n---\n\n# Individual Reviewer Responses\n\n${formatAnswers(answers)}`
+        : `${synthSection}\n\n---\n\n# Individual Reviewer Responses\n\n${formatAnswers(answers)}`;
       return {
-        content: [
-          {
-            type: "text",
-            text: withFlushNotice(
-              `${synthSection}\n\n---\n\n# Individual Reviewer Responses\n\n${formatAnswers(answers)}`,
-            ),
-          },
-        ],
+        content: [{ type: "text", text: withFlushNotice(body) }],
       };
     },
   );
@@ -852,14 +901,38 @@ export function registerAllTools(server: McpServer): void {
       const synthSection = synthError
         ? `# Security Review (synth failed)\n\n_Error: ${synthError}_`
         : `# Security Review — Synthesized\n\n${synthText.trim()}`;
+      const nudge = bootstrapNudgeFor(projectRoot, pc);
+      const body = nudge
+        ? `${nudge}\n\n---\n\n${synthSection}\n\n---\n\n# Individual Reviewer Responses\n\n${formatAnswers(answers)}`
+        : `${synthSection}\n\n---\n\n# Individual Reviewer Responses\n\n${formatAnswers(answers)}`;
+      return {
+        content: [{ type: "text", text: withFlushNotice(body) }],
+      };
+    },
+  );
+
+  server.tool(
+    "apex_bootstrap_project",
+    "**Scaffold the `.apex/` convention in a consumer project for use with apex_code_review / apex_security_review / apex_synthesize / apex_fanout / apex_decompose.** Writes 6 template MDs to `<projectRoot>/.apex/`: `context.md` (project frame + domain glossary + past incidents + conventions) and `personas/{logic,approach,security,business-logic,qa}.md` (per-persona project addenda). Each template is a STUB with HTML-comment instructions that the calling LLM (you) fills in by reading the project's CLAUDE.md / README / sample source.\n\nCall this ONCE per project, then open each generated file via Read + Edit and fill in based on what you know about the project. After filling in, every apex MoA call from this project should pass `projectRoot=\"<same-path>\"` so the personas review against project-grounded context.\n\nSafe to re-run — existing files are skipped unless `overwrite=true`. Run with `overwrite=true` only when explicitly resetting the templates.\n\n**The other-Mac CC session reading this:** if you got a 💡 nudge from apex_code_review or apex_security_review pointing here, this is the tool to call. Pass YOUR project's absolute root path as `projectRoot`.",
+    {
+      projectRoot: z
+        .string()
+        .min(1)
+        .describe(
+          "Absolute path to the project's root (e.g. \"/Users/.../lfm\"). The .apex/ directory is created/populated here.",
+        ),
+      overwrite: z
+        .boolean()
+        .default(false)
+        .describe(
+          "If true, overwrite existing .apex/*.md files with fresh templates. Default false — existing files are preserved with a skip reason in the response.",
+        ),
+    },
+    async ({ projectRoot, overwrite }) => {
+      const result = bootstrapProjectContext(projectRoot, { overwrite });
       return {
         content: [
-          {
-            type: "text",
-            text: withFlushNotice(
-              `${synthSection}\n\n---\n\n# Individual Reviewer Responses\n\n${formatAnswers(answers)}`,
-            ),
-          },
+          { type: "text", text: withFlushNotice(formatBootstrapReport(result)) },
         ],
       };
     },
