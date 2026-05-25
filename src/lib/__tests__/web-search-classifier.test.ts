@@ -61,4 +61,40 @@ describe("classifyWebGrounding", () => {
     expect(grounded.reason.length).toBeGreaterThan(0);
     expect(skipped.reason.length).toBeGreaterThan(0);
   });
+
+  describe("release verbs (2026-05-25 regression)", () => {
+    it("grounds 'What did Anthropic ship this week?' (the original failing query)", () => {
+      const r = classifyWebGrounding("What did Anthropic ship this week?");
+      expect(r.shouldGround).toBe(true);
+      expect(r.triggers).toContain("temporal-keyword");
+      expect(r.triggers).toContain("release-verb");
+    });
+
+    it("grounds release-class verbs paired with a temporal keyword", () => {
+      for (const verb of ["release", "launch", "announce", "publish", "drop", "unveil"]) {
+        const r = classifyWebGrounding(`What did Acme ${verb} this week?`);
+        expect(r.shouldGround, `verb=${verb}`).toBe(true);
+      }
+    });
+
+    it("does NOT ground a release-verb alone in an evergreen 'how do I' query", () => {
+      const r = classifyWebGrounding("How do I ship a Python package to PyPI?");
+      expect(r.shouldGround).toBe(false);
+      expect(r.triggers).toEqual(["release-verb"]);
+    });
+
+    it("grounds plural news keywords (announcements / press releases)", () => {
+      expect(
+        classifyWebGrounding("Latest announcements from Apple").shouldGround,
+      ).toBe(true);
+      expect(
+        classifyWebGrounding("Recent press releases from Microsoft").shouldGround,
+      ).toBe(true);
+    });
+
+    it("counts release-verb as a trigger that can combine with recent-year", () => {
+      const r = classifyWebGrounding("OpenAI released GPT-5 in 2025");
+      expect(r.shouldGround).toBe(true);
+    });
+  });
 });

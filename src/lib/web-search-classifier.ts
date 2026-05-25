@@ -7,6 +7,7 @@ export type GroundingTrigger =
   | "temporal-keyword"
   | "commerce-keyword"
   | "news-keyword"
+  | "release-verb"
   | "recent-year"
   | "product-noun-pair";
 
@@ -25,8 +26,22 @@ const TEMPORAL_RE =
 const COMMERCE_RE =
   /\b(price|pricing|cost|buy|purchase|available|availability|in stock|catalog|catalogue|sku|model number|release(?:d)?|launch(?:ed)?|discontinued|in production|on sale)\b/i;
 
-// News / announcement / update terms.
-const NEWS_RE = /\b(news|announcement|press release|update|changelog|release notes)\b/i;
+// Strong news / announcement terms — these alone are enough to trigger
+// grounding because they're rarely used outside a news-query context.
+// Plurals + variants explicitly handled.
+const NEWS_RE =
+  /\b(news|announcements?|press[- ]releases?|changelogs?|release notes?)\b/i;
+
+// Release-class VERBS (ship/release/launch/announce/publish/unveil/drop).
+// These are highly news-correlated when paired with a temporal/year/
+// proper-noun signal, but ambiguous on their own ("how do I ship a
+// Python package?" is evergreen). So they count as a trigger but never
+// trigger grounding alone — the ≥2-trigger rule below catches the
+// real news queries while letting "how do I…" pass through. Real
+// failure caught 2026-05-25: "What did Anthropic ship this week?"
+// missed grounding entirely because temporal alone wasn't enough.
+const RELEASE_VERB_RE =
+  /\b(ship(?:ped|s|ping)?|release[ds]?|releasing|launch(?:ed|es|ing)?|announce[ds]?|announcing|publish(?:ed|es|ing)?|drop(?:ped|s|ping)?|unveil(?:ed|s|ing)?)\b/i;
 
 // Year >= 2024. Tightens to >= 2024 because most foundation models'
 // training cutoff is mid-2023 to early 2024.
@@ -43,16 +58,21 @@ export function classifyWebGrounding(prompt: string): GroundingClassification {
   if (TEMPORAL_RE.test(prompt)) triggers.push("temporal-keyword");
   if (COMMERCE_RE.test(prompt)) triggers.push("commerce-keyword");
   if (NEWS_RE.test(prompt)) triggers.push("news-keyword");
+  if (RELEASE_VERB_RE.test(prompt)) triggers.push("release-verb");
   if (RECENT_YEAR_RE.test(prompt)) triggers.push("recent-year");
   if (PRODUCT_NOUN_RE.test(prompt)) triggers.push("product-noun-pair");
 
   // Decision rule:
-  //  - Any commerce keyword alone → ground (catalog answers are
-  //    cutoff-fatal even without temporal markers).
-  //  - Any news keyword alone → ground (news is always fresh).
-  //  - Otherwise: need at least two triggers to suppress false positives
-  //    on queries that incidentally mention "current state" of an
-  //    evergreen topic.
+  //  - commerce-keyword alone → ground (catalog answers are cutoff-fatal
+  //    even without temporal markers).
+  //  - news-keyword alone (the strong noun-form "news/announcement/press
+  //    release/changelog/release notes") → ground.
+  //  - release-verb (ship/release/launch/announce/publish/unveil/drop)
+  //    counts as a trigger but is ambiguous on its own ("how do I ship
+  //    a Python package" is evergreen). Needs a companion signal.
+  //  - Otherwise: need ≥ 2 triggers to suppress false positives on
+  //    queries that incidentally mention "current state" of an evergreen
+  //    topic.
   let shouldGround = false;
   let reason = "no triggers matched";
   if (triggers.includes("commerce-keyword")) {
