@@ -2,10 +2,39 @@
 
 > Updated after every completed task. Read this first to resume work in a new session — it captures volatile state that `CLAUDE.md` doesn't (CLAUDE.md is stable architecture; this is "where are we right now").
 
-**Last updated:** 2026-05-24
-**Last action:** Big push — Waves 13a/13b/13c/13d (subject-fidelity, classifier fix for multi-clause prompts, apex_report description hardening, transient-error noise filter), 14 (auto follow-up detection + UI banner), 14a (free-tier hint copy), 14b (`context` parameter on apex_fanout/synthesize/decompose — fixes MCP→meeting-platform drift), 15a (DeepSeek as 5th fan-out provider, env-gated), 16a (apex_history_search MCP tool), plus a critical dev-server fix (qa:check now builds to `.next-qa/` so it stops clobbering the running `pnpm dev`'s `.next/`). 234/234 tests, all gates clean. 13 commits (`08f55d5`..`9ea4b38`) pushed.
+**Last updated:** 2026-05-25
+**Last action:** Wave 18 trio + bootstrap shipped — (a) `<projectRoot>/.apex/context.md` + `.apex/personas/*.md` loader threaded through 5 MoA tools; (b) 5 server-side persona charters with data-shape mandates + un-self-servable triggers + open-for-extension envelopes; (c) dissent-preserving synth that surfaces every blocking finding instead of smoothing; (d) `apex_bootstrap_project` MCP tool + discovery nudges so any CC session on any project auto-scaffolds + self-fills `.apex/` without manual setup. 291/291 tests; type-check + build clean. Two commits today: `421ffdc` (18a/b/c) and `8cdaf02` (18d). Issue #21 (Wave 18 proposal) closed.
 
 **Blocked on:** Nothing.
+
+## Wave 18 — maker-checker hardening (2026-05-25)
+
+| Wave | What | Commit |
+|---|---|---|
+| 18a | `.apex/` project-context loader. New `projectRoot` arg on apex_synthesize / apex_fanout / apex_decompose / apex_code_review / apex_security_review. Reads `<projectRoot>/.apex/context.md` (8k cap) + `.apex/personas/<slot>.md` (4k cap each). Strict persona-slot allowlist; sanitizeMd directive-stripping defense-in-depth. | `421ffdc` |
+| 18b | 5 server-side persona charters at `src/personas/{logic, approach, security, business-logic, qa}.md`. Each declares Role (immutable), Mandate, Data-shape mandate, Un-self-servable triggers, Open-for-extension envelope. `src/lib/personas.ts` composes charter → project context → project addendum → per-call context in strict trust order. Panel fires by default on apex_code_review + apex_security_review. Default assignment: claude→business-logic, openai→security, llama→logic, gemini→approach, deepseek→qa. | `421ffdc` |
+| 18c | Dissent-preserving synth. CODE_REVIEW_SYNTH_SYSTEM_PROMPT rewritten: every blocking finding from any persona surfaces; INSUFFICIENT_INPUT forces overall rating to P0; findings attribute to the persona that raised them. | `421ffdc` |
+| 18d | `apex_bootstrap_project` MCP tool (#12). Writes 6 template MDs with structured HTML-comment instructions the calling LLM follows to fill in. Idempotent; never overwrites without `overwrite=true`. Discovery nudges in apex_code_review + apex_security_review responses point any caller without `projectRoot` (or with an empty `.apex/`) to the bootstrap tool. Zero manual setup required on downstream Macs. | `8cdaf02` |
+
+## Filing-conventions awareness pass (2026-05-25)
+
+Issue #21 (Wave 18 proposal) was filed via raw `gh issue create` from another Mac, bypassing apex_report → outbox → flush. Two fixes shipped:
+
+| Fix | What | Commit |
+|---|---|---|
+| `pnpm feedback:status` backstop | Now runs two `gh issue list` queries: one filtered by `feedback` label, one unfiltered. Anything in the second list that's not in the first surfaces as an unlabeled orphan with a warning telling the user to add the label. | `fece014` |
+| apex_report description hardened (again) | Explicitly states the five things `gh issue create` skips (label / title prefix / metadata / redaction / audit trail), names the real incident, and tells the agent what to do if apex_report isn't in its tool list. README + feedback/README updated. | `fece014` |
+
+## Wave 17 — web grounding (2026-05-24/25)
+
+| Wave | What | Commit |
+|---|---|---|
+| 17a | `apex_web_search` MCP tool (11th). Tavily primary (LLM-cleaned snippets, free 1000/mo, no card), DuckDuckGo HTML scrape fallback (zero key, zero signup). 24h SQLite cache. Snippet-only by design — no full-page fetch. | `a53c685` |
+| 17b | Full auto-grounding pipeline. Sync regex classifier (web-search-classifier.ts) detects current-data queries (latest/price/news/2024+). `webGroundingMode` tri-state Off/Auto/Always in Settings (default Auto, localStorage-persisted). `history.web_grounded` DB column. SSE `web-grounded` event. 🌐 badge + "Retry with web search" button on low-confidence synth panels. | `faaa08f` |
+| Brave → DDG migration | Brave Search was switched to credit-based model in 2025 + requires card at signup. Dropped Brave entirely; DDG HTML scrape (custom regex parser + entity decoder + URL allowlist) is the no-key fallback. Saved memory `feedback_verify_api_pricing.md`. | `3de4c4f` |
+| 17c | Security patch pass from MoA QA + Security reviews of 16b/17a/17b. 4 Critical + 9 High fixed: web-context now in user prompt (not synth system prompt), per-request nonce sentinel, code-fence injection fix, dead-letter context sanitization implemented, GH auto-close keyword stripping, decodeEntities range guard, scheme allowlist tightened, forceWebGrounding mode-off bypass, snippet size cap, language/focus arg sanitization, feedback-flush escape hardening. 18 new regression tests. | `8666da0` |
+
+Also shipped in the 17 timeframe (2026-05-24): Wave 16a (`apex_history_search`), Wave 16b (project-agnostic `apex_code_review` + `apex_security_review`).
 
 ## Wave 13–16 — quality + extensibility push (2026-05-24)
 
