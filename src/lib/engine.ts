@@ -28,6 +28,17 @@ const DEFAULT_SYSTEM_PROMPT =
   "SUBJECT FIDELITY: If the user references a specific entity (product name + version, model number, date, person, place, version string), answer about THAT EXACT entity. If you don't have reliable training data about it — for example because it was released after your knowledge cutoff — say so explicitly with one line at the top: \"I don't have reliable information about <entity>.\" Then optionally describe what you DO know about adjacent or older versions, clearly labeled as such. NEVER silently substitute a different version, similar-sounding name, or your guess at a typo — the user's multi-model system compares answers across providers, and a silent substitution poisons the comparison.";
 
 export const DEFAULT_PROVIDER_TIMEOUT_MS = 90_000;
+
+// Wave 19a — per-provider timeout override. Claude is the load-bearing
+// model on apex_code_review / apex_security_review (it gets the
+// business-logic persona). With a full .apex/context.md frame + project
+// addendum + a real-world file under review, Claude regularly needs more
+// than 90s. Real failure: GH issue #23 — every panel review timed out
+// the Claude slot, silently degrading the panel to context-blind models.
+// Other providers stay at the default; only Claude gets the bump.
+export const PROVIDER_TIMEOUT_OVERRIDE_MS: Partial<Record<Provider, number>> = {
+  claude: 240_000,
+};
 const DESCRIBE_MODEL = "openai/gpt-4o-mini";
 
 const githubModels = createOpenAICompatible({
@@ -160,6 +171,10 @@ export function fanOut(prompt: string, opts: FanOutOptions = {}): FanOutItem[] {
     const sysForProvider = overridePrompt
       ? overridePrompt
       : composeSystemPrompt(sys, roleSuffixFor(p, opts.roles));
+    // Wave 19a — per-provider timeout override (Claude gets 240s).
+    // Caller-supplied timeoutMs (if any) always wins.
+    const perProviderTimeout =
+      opts.timeoutMs ?? PROVIDER_TIMEOUT_OVERRIDE_MS[p] ?? DEFAULT_PROVIDER_TIMEOUT_MS;
     const { stream, usage } = streamFor(
       p,
       model,
@@ -168,7 +183,7 @@ export function fanOut(prompt: string, opts: FanOutOptions = {}): FanOutItem[] {
       attachments,
       describePromises,
       opts.signal,
-      timeoutMs,
+      perProviderTimeout,
     );
     return {
       provider: p,

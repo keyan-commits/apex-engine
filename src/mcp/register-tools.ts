@@ -30,6 +30,11 @@ import {
   buildPanelSystemPrompts,
   REVIEW_PANEL_ASSIGNMENTS,
 } from "@/lib/personas";
+import {
+  buildPanelStatus,
+  formatPanelStatusBlock,
+  resolvePanelSynthesizerId,
+} from "@/lib/panel-status";
 import { webSearch, formatWebSearchAsMarkdown } from "@/lib/web-search";
 
 // Shared MCP tool registration — called by BOTH the stdio entry point
@@ -227,21 +232,31 @@ function sanitizeContextBlock(raw: string | undefined): string {
 // generic synth dedupes and smooths; that is the WRONG behavior for
 // a review panel. A lone reviewer raising a P0 must block, not get
 // averaged into a 4-to-1 "looks fine."
+//
+// Wave 19a additions (GH issue #23 fallout): the synth now also has to
+// detect MISSING personas — when a provider errored or returned empty
+// text. Silent degradation to context-blind models is the worst
+// possible failure mode (you get a confident verdict from reviewers
+// that don't know the project's rules). New rules below.
 const CODE_REVIEW_SYNTH_SYSTEM_PROMPT = [
-  "You are synthesizing reviews from a maker-checker persona panel into a single canonical review. This is NOT generic synthesis — your job is to PRESERVE DISSENT, not resolve it.",
+  "You are synthesizing reviews from a maker-checker persona panel into a single canonical review. This is NOT generic synthesis — your job is to PRESERVE DISSENT and LOUDLY SURFACE GAPS, not resolve them.",
   "",
   "Rules — strict order of precedence:",
   "",
-  "1. **Preserve every blocking finding.** If ANY reviewer rates a finding Critical or High, it surfaces in the output at THAT severity. You may NOT downgrade severity because other reviewers disagree. The panel is structurally diverse on purpose; a finding only one persona sees is exactly what the panel exists to surface.",
-  "2. **Preserve every INSUFFICIENT_INPUT verdict.** If a persona refused to review because its data-shape mandate wasn't satisfied (top-level `## INSUFFICIENT_INPUT`), surface it as a blocking finding under `## Insufficient Input`. The maker did not give the reviewer what it needs; the review is not complete.",
-  "3. **Dedupe ONLY on same root cause.** If two reviewers flag the same underlying defect with different wording or different line numbers, merge them into ONE finding — and preserve the HIGHEST severity any reviewer gave it. Do NOT merge findings that share a surface symptom but have different root causes.",
-  "4. **Never invent.** If no reviewer reported a class of issue, do not add it. Your job is to combine what the reviewers said, not to add your own analysis.",
-  "5. **Attribute findings to the persona that raised them.** Each finding's `Location` field MUST cite which persona(s) (logic / approach / security / business-logic / qa) raised it.",
+  "1. **Detect missing personas FIRST.** Before any other analysis, check whether each of the five persona slots (logic, approach, security, business-logic, qa) appears in the reviewer panel below. The system prompt section `[PERSONA PANEL ASSIGNMENTS]` lists which provider runs which persona, and `[PERSONA PANEL STATUS]` (when present) names any persona that errored. For every missing or errored persona, surface a `⚠️ Persona unavailable — <slot>-blind` line in the Summary AND under a dedicated `## Persona Gaps` section. If **business-logic** is missing on an artifact involving data rules, mapping/identity, ownership, billing, settlement, or any project-specific rule, force the overall risk rating to **P0** with the justification \"business-logic lens unavailable — verdict is context-blind.\" Do NOT issue a clean rating when the grounded persona is missing.",
+  "2. **Preserve every blocking finding from the personas that DID run.** If ANY reviewer rates a finding Critical or High, it surfaces in the output at THAT severity. You may NOT downgrade severity because other reviewers disagree. The panel is structurally diverse on purpose; a finding only one persona sees is exactly what the panel exists to surface.",
+  "3. **Preserve every INSUFFICIENT_INPUT verdict.** If a persona refused to review because its data-shape mandate wasn't satisfied (top-level `## INSUFFICIENT_INPUT`), surface it as a blocking finding under `## Insufficient Input`. The maker did not give the reviewer what it needs; the review is not complete.",
+  "4. **Dedupe ONLY on same root cause.** If two reviewers flag the same underlying defect with different wording or different line numbers, merge them into ONE finding — and preserve the HIGHEST severity any reviewer gave it. Do NOT merge findings that share a surface symptom but have different root causes.",
+  "5. **Never invent.** If no reviewer reported a class of issue, do not add it. Your job is to combine what the reviewers said, not to add your own analysis.",
+  "6. **Attribute findings to the persona that raised them.** Each finding's `Location` field MUST cite which persona(s) (logic / approach / security / business-logic / qa) raised it.",
   "",
   "Output structure (use these headings verbatim):",
   "",
   "## Summary",
-  "Lead with the total count of unique findings and the count of personas that emitted `## INSUFFICIENT_INPUT`. Then 1-2 sentences on the highest-severity findings.",
+  "Lead with: (a) the total count of unique findings, (b) the count of personas that emitted `## INSUFFICIENT_INPUT`, AND (c) any persona slots missing/errored (cite by slot name). Then 1-2 sentences on the highest-severity findings. If ANY persona is missing, the FIRST line of the Summary MUST be a clearly-marked banner like `⚠️ <slot> persona unavailable — review is <slot>-blind`.",
+  "",
+  "## Persona Gaps",
+  "(omit if all 5 personas returned a non-empty review) — list each persona slot that errored or returned empty text, with the underlying provider error message when known. This section is informational; the actual scoring impact is enforced in Overall Risk Rating below.",
   "",
   "## Insufficient Input",
   "(omit if no persona raised it) — list each persona that refused with the named missing items. Treat this section as BLOCKING regardless of other findings.",
@@ -261,7 +276,7 @@ const CODE_REVIEW_SYNTH_SYSTEM_PROMPT = [
   "Each finding uses: **Severity**, **Personas** (which persona(s) raised it), **Location**, **Explanation**, **Recommended Fix**.",
   "",
   "## Overall Risk Rating",
-  "One of: **P0** (stop-the-line; do NOT deploy — auto if ANY Critical OR any Insufficient Input), **P1** (fix before merge — auto if ANY High), **P2** (fix in backlog — Mediums only), **P3** (informational only — Lows only or clean).",
+  "One of: **P0** (stop-the-line; do NOT deploy — auto if ANY Critical, ANY Insufficient Input, OR business-logic persona missing on an artifact involving data/rule/mapping/ownership/billing/settlement), **P1** (fix before merge — auto if ANY High, OR any non-business-logic persona missing), **P2** (fix in backlog — Mediums only, all personas returned), **P3** (informational only — Lows only or clean, all personas returned).",
   "Justify in one sentence. The rating MUST follow the rules above mechanically; do not soften.",
 ].join("\n");
 
@@ -766,6 +781,12 @@ export function registerAllTools(server: McpServer): void {
         error: a.error ?? undefined,
       }));
 
+      // Wave 19a — surface per-slot panel health so the synth can refuse
+      // to issue a confident verdict when business-logic (or any other
+      // grounded persona) is missing.
+      const panelStatus = buildPanelStatus(answers, includeClaude);
+      const panelStatusBlock = formatPanelStatusBlock(panelStatus);
+
       // Wave 18a — the synth sees the same project-standing context the
       // panel members saw, plus an explicit reminder that each fan-out
       // answer came from a distinct persona (so the dissent-preserving
@@ -781,6 +802,7 @@ export function registerAllTools(server: McpServer): void {
           ? `[Context from calling session]\n${sanitizedCaller}\n[End context]`
           : "",
         `[PERSONA PANEL ASSIGNMENTS]\n${personaLegend}\n[END PERSONA PANEL ASSIGNMENTS]`,
+        panelStatusBlock,
         CODE_REVIEW_SYNTH_SYSTEM_PROMPT,
       ]
         .filter(Boolean)
@@ -789,8 +811,13 @@ export function registerAllTools(server: McpServer): void {
       let synthText = "";
       let synthError: string | null = null;
       try {
+        // Wave 19a — panel synth gets claude-sonnet (or gpt-4o-mini
+        // fallback) for token headroom. The default gpt-oss-120b on
+        // Groq's free tier hits 8K TPM with 5-persona fan-in.
+        const panelSynthId = resolvePanelSynthesizerId(includeClaude);
         for await (const chunk of synthesize(reviewPrompt, synthInput, {
           systemPrompt: synthSystemPrompt,
+          synthesizerId: panelSynthId,
         })) {
           synthText += chunk;
         }
@@ -870,6 +897,10 @@ export function registerAllTools(server: McpServer): void {
         error: a.error ?? undefined,
       }));
 
+      // Wave 19a — per-slot panel health for loud-degrade.
+      const panelStatus = buildPanelStatus(answers, includeClaude);
+      const panelStatusBlock = formatPanelStatusBlock(panelStatus);
+
       const projectBlock = formatProjectContextBlock(pc);
       const sanitizedCaller = sanitizeContextBlock(context);
       const personaLegend = Object.entries(REVIEW_PANEL_ASSIGNMENTS)
@@ -881,6 +912,7 @@ export function registerAllTools(server: McpServer): void {
           ? `[Context from calling session]\n${sanitizedCaller}\n[End context]`
           : "",
         `[PERSONA PANEL ASSIGNMENTS]\n${personaLegend}\n[END PERSONA PANEL ASSIGNMENTS]`,
+        panelStatusBlock,
         CODE_REVIEW_SYNTH_SYSTEM_PROMPT,
       ]
         .filter(Boolean)
@@ -889,8 +921,11 @@ export function registerAllTools(server: McpServer): void {
       let synthText = "";
       let synthError: string | null = null;
       try {
+        // Wave 19a — claude-sonnet (or gpt-4o-mini fallback) for token headroom.
+        const panelSynthId = resolvePanelSynthesizerId(includeClaude);
         for await (const chunk of synthesize(reviewPrompt, synthInput, {
           systemPrompt: synthSystemPrompt,
+          synthesizerId: panelSynthId,
         })) {
           synthText += chunk;
         }
