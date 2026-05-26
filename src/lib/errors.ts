@@ -6,6 +6,7 @@ export type ErrorKind =
   | "aborted"
   | "network"
   | "server"
+  | "content-filter"
   | "unknown";
 
 export type ClassifiedError = {
@@ -27,6 +28,26 @@ export function classifyError(err: unknown): ClassifiedError {
   if (status === 401 || /unauthori[sz]ed|invalid api key/i.test(text))
     return { kind: "unauthorized", message: "API key missing or invalid" };
   if (status === 403) return { kind: "forbidden", message: "Access forbidden" };
+  // Wave 20a — Azure content filter via GitHub Models. Real failure
+  // visible in the screenshot: "The response was filtered due to the
+  // prompt triggering Azure OpenAI's content management policy." The
+  // raw error message buries the cause + recommends "modify your
+  // prompt"; we surface a shorter, action-oriented message and tag the
+  // error kind so the fan-out can decide to skip-loudly vs retry-on-
+  // fallback-model. Detection is generous: the same Azure layer fronts
+  // all models on the GitHub Models endpoint AND the upstream Azure
+  // OpenAI Service, so we match by signature words.
+  if (
+    /content[_ ](?:filter|management policy|filtering polic)/i.test(text) ||
+    /\bjailbreak\b/i.test(text) ||
+    /responsible ai|RAI\b/i.test(text)
+  ) {
+    return {
+      kind: "content-filter",
+      message:
+        "Azure content filter rejected the prompt — try rephrasing, or rely on the panel's other providers (this one is dropped)",
+    };
+  }
   if (
     status === 429 ||
     /quota.{0,30}exceed|rate.?limit|too many requests/i.test(text)

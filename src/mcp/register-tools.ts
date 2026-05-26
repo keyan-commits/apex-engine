@@ -575,6 +575,7 @@ export function registerAllTools(server: McpServer): void {
           synthText: null,
           synthError: null,
           projectId: null,
+          channel: "mcp",
         });
       } catch (err) {
         console.error("[mcp] history save failed:", err);
@@ -665,6 +666,7 @@ export function registerAllTools(server: McpServer): void {
           projectId: null,
           synthesizerId: synthesizerId ?? null,
           totalLatencyMs: Date.now() - synthStart,
+          channel: "mcp",
         });
       } catch (err) {
         console.error("[mcp] history save failed:", err);

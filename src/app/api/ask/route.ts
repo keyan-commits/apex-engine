@@ -363,6 +363,14 @@ export async function POST(req: Request) {
       const recent = listHistory({
         limit: 1,
         projectId: body.projectId ?? undefined,
+        // Wave 20 hotfix — only the web UI's own turns are valid
+        // parents for a user-typed follow-up. MCP-channel entries
+        // (apex_synthesize / apex_fanout / apex_decompose calls from
+        // another CC session) are internal and were silently becoming
+        // parents whenever a CC session was active in the same repo.
+        // Real failure: "What about Claude Design?" auto-threaded to
+        // an apex_synthesize MCP call about Wave 20 defects.
+        channel: "ui",
       });
       const lastEntry = recent[0] ?? null;
       const fu = detectFollowUp(body.prompt, lastEntry);
@@ -968,6 +976,7 @@ export async function POST(req: Request) {
             totalOutputTokens,
             totalCostUsd,
             webGrounded: webGroundedPayload != null,
+            channel: "ui",
           });
           send({ type: "history-saved", id });
         } catch (err) {

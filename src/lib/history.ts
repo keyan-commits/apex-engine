@@ -70,6 +70,26 @@ function db(): Database.Database {
       "web_grounded",
       "ALTER TABLE history ADD COLUMN web_grounded INTEGER DEFAULT 0",
     ],
+    // Wave 20 hotfix — channel of origin for each history entry.
+    // Values: "ui" (web app / api/ask), "mcp" (apex_synthesize /
+    // apex_fanout / apex_decompose called via MCP from another CC
+    // session), "api" (direct /api/* curl). Used by the follow-up
+    // detector (src/lib/follow-up.ts via /api/ask) to filter out MCP-
+    // sourced parents — a user-typed follow-up should NOT auto-thread
+    // to an internal apex_synthesize call.
+    //
+    // Real failure: 2026-05-27 — "What about Claude Design?" auto-
+    // threaded to history #85, which was an apex_synthesize MCP call
+    // about Wave 20 defects (filed by a CC session in this same repo).
+    // The detector picked the most-recent entry without source filter.
+    //
+    // Default "ui" is safe for backfill: pre-Wave-20 rows came almost
+    // entirely from the web UI before MCP usage scaled up, and the
+    // filter only excludes when channel="mcp" or "api".
+    [
+      "channel",
+      "ALTER TABLE history ADD COLUMN channel TEXT DEFAULT 'ui'",
+    ],
   ];
   for (const [col, sql] of migrations) {
     if (!cols.has(col)) d.exec(sql);
@@ -149,7 +169,10 @@ export type HistoryEntry = {
   totalOutputTokens: number | null;
   totalCostUsd: number | null;
   webGrounded: boolean;
+  channel: HistoryChannel;
 };
+
+export type HistoryChannel = "ui" | "mcp" | "api";
 
 type SaveInput = {
   prompt: string;
@@ -169,6 +192,7 @@ type SaveInput = {
   totalOutputTokens?: number | null;
   totalCostUsd?: number | null;
   webGrounded?: boolean;
+  channel?: HistoryChannel;
 };
 
 export function saveHistory(input: SaveInput): number {
@@ -179,8 +203,8 @@ export function saveHistory(input: SaveInput): number {
          project_id, cancelled, synthesizer_id, total_latency_ms,
          ensemble_id, roles_json, attachments_json, parent_id,
          subagent_tree_json, total_input_tokens, total_output_tokens,
-         total_cost_usd, web_grounded
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         total_cost_usd, web_grounded, channel
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       Date.now(),
@@ -205,6 +229,7 @@ export function saveHistory(input: SaveInput): number {
       input.totalOutputTokens ?? null,
       input.totalCostUsd ?? null,
       input.webGrounded ? 1 : 0,
+      input.channel ?? "ui",
     );
   return Number(info.lastInsertRowid);
 }
@@ -231,6 +256,7 @@ type Row = {
   total_output_tokens: number | null;
   total_cost_usd: number | null;
   web_grounded: number | null;
+  channel: string | null;
 };
 
 function toEntry(r: Row): HistoryEntry {
@@ -289,13 +315,17 @@ function toEntry(r: Row): HistoryEntry {
     totalOutputTokens: r.total_output_tokens,
     totalCostUsd: r.total_cost_usd,
     webGrounded: r.web_grounded === 1,
+    channel:
+      r.channel === "mcp" || r.channel === "api" || r.channel === "ui"
+        ? r.channel
+        : "ui",
   };
 }
 
 const SELECT_COLS = `id, created_at, prompt, answers_json, synth_text, synth_error,
   project_id, cancelled, synthesizer_id, total_latency_ms, ensemble_id, roles_json,
   attachments_json, parent_id, subagent_tree_json, tags_json, starred,
-  total_input_tokens, total_output_tokens, total_cost_usd, web_grounded`;
+  total_input_tokens, total_output_tokens, total_cost_usd, web_grounded, channel`;
 
 export type ListHistoryOptions = {
   limit?: number;
@@ -306,10 +336,15 @@ export type ListHistoryOptions = {
   ensembleId?: string;
   fromMs?: number;
   toMs?: number;
+  // Wave 20 hotfix — restrict to entries with a specific channel.
+  // The web UI follow-up detector passes channel="ui" so an internal
+  // apex_synthesize MCP call from a CC session can't accidentally
+  // become the parent of a user-typed follow-up.
+  channel?: "ui" | "mcp" | "api";
 };
 
 export function listHistory(opts: ListHistoryOptions = {}): HistoryEntry[] {
-  const { limit = 50, offset = 0, projectId, q, starred, ensembleId, fromMs, toMs } = opts;
+  const { limit = 50, offset = 0, projectId, q, starred, ensembleId, fromMs, toMs, channel } = opts;
   const wheres: string[] = [];
   const params: unknown[] = [];
 
@@ -337,6 +372,18 @@ export function listHistory(opts: ListHistoryOptions = {}): HistoryEntry[] {
   if (toMs !== undefined) {
     wheres.push("history.created_at <= ?");
     params.push(toMs);
+  }
+  if (channel) {
+    // Pre-Wave-20 rows have NULL channel (default "ui" via toEntry).
+    // The SQL-side filter must also accept NULL so old UI-channel rows
+    // continue to match channel="ui" queries.
+    if (channel === "ui") {
+      wheres.push("(history.channel = ? OR history.channel IS NULL)");
+      params.push("ui");
+    } else {
+      wheres.push("history.channel = ?");
+      params.push(channel);
+    }
   }
 
   const where = wheres.length ? `WHERE ${wheres.join(" AND ")}` : "";
