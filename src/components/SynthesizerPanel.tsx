@@ -23,6 +23,10 @@ export type WebGroundingBadge = {
   query: string;
   resultCount: number;
   reason: string;
+  // Wave 21b — when webFetchDepth > 0, server also fetched the top N
+  // URLs in full and appended their bodies to the [WEB_CONTEXT] block.
+  // Surfaced as "+N pages" alongside the grounded badge.
+  fetchedPages?: Array<{ url: string; title: string | null; chars: number }>;
 };
 
 export type SynthWaiting = {
@@ -91,6 +95,24 @@ export function SynthesizerPanel({
               aria-label={`Synth grounded with fresh web data via ${webGrounding.provider}`}
             >
               <span aria-hidden>🌐 </span>grounded
+            </span>
+          )}
+          {webGrounding && webGrounding.fetchedPages && webGrounding.fetchedPages.length > 0 && (
+            <span
+              className="text-[10px] font-normal px-1.5 py-0.5 rounded-md bg-emerald-100 text-emerald-900 dark:bg-emerald-900/40 dark:text-emerald-200"
+              title={`Also fetched top ${webGrounding.fetchedPages.length} URL${
+                webGrounding.fetchedPages.length === 1 ? "" : "s"
+              } in full:\n${webGrounding.fetchedPages
+                .map(
+                  (p) => `  ${p.title ?? p.url} — ${p.chars.toLocaleString()} chars`,
+                )
+                .join("\n")}`}
+              aria-label={`Auto-fetched ${webGrounding.fetchedPages.length} page${
+                webGrounding.fetchedPages.length === 1 ? "" : "s"
+              } in full`}
+            >
+              <span aria-hidden>📄 </span>+{webGrounding.fetchedPages.length}{" "}
+              page{webGrounding.fetchedPages.length === 1 ? "" : "s"}
             </span>
           )}
         </h2>

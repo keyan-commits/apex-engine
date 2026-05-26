@@ -43,6 +43,7 @@ const ENABLED_PROVIDERS_KEY = "apex.enabled-providers";
 const FAVOR_CLAUDE_KEY = "apex.favor-claude-when-degraded";
 const SELF_REFINE_KEY = "apex.self-refine";
 const WEB_GROUNDING_KEY = "apex.web-grounding-mode";
+const WEB_FETCH_DEPTH_KEY = "apex.web-fetch-depth";
 
 type WebGroundingMode = "off" | "auto" | "always";
 const COMPACT_MODE_KEY = "apex.compact-mode";
@@ -67,6 +68,10 @@ type WebGroundingState = {
   query: string;
   resultCount: number;
   reason: string;
+  // Wave 21b — top URLs that were also fetched in full and appended
+  // to the [WEB_CONTEXT] block. Empty when webFetchDepth=0 or fetches
+  // all failed. UI shows "+N pages" next to the grounded badge.
+  fetchedPages: Array<{ url: string; title: string | null; chars: number }>;
 };
 
 type State = {
@@ -251,6 +256,7 @@ function reducer(state: State, action: Action): State {
               query: e.prompt,
               resultCount: 0,
               reason: "loaded from history (provider/result-count not stored)",
+              fetchedPages: [],
             }
           : null,
         groundedByProvider: {},
@@ -402,8 +408,24 @@ function reducer(state: State, action: Action): State {
               query: ev.query,
               resultCount: ev.resultCount,
               reason: ev.reason,
+              fetchedPages: [],
             },
           };
+        case "web-fetched":
+          // Wave 21b — server auto-fetched top N URLs in full. Attach
+          // to webGrounding state if grounding fired (web-grounded
+          // arrives first per the API order). If no grounding state
+          // yet, ignore — bare web-fetched without grounding shouldn't
+          // happen, but be defensive.
+          return state.webGrounding
+            ? {
+                ...state,
+                webGrounding: {
+                  ...state.webGrounding,
+                  fetchedPages: ev.pages,
+                },
+              }
+            : state;
         case "grounded-ack":
           // Wave 20b — per-provider self-report of whether it used the
           // web context. Diagnostic only; the actual behavior change
@@ -485,6 +507,13 @@ export default function Home() {
   });
   // Wave 17b — web grounding mode. Off | Auto | Always. Auto runs a
   // sync regex classifier server-side; Always grounds every query.
+  const [webFetchDepth, setWebFetchDepth] = useState<number>(() => {
+    if (typeof window === "undefined") return 0;
+    const stored = window.localStorage.getItem(WEB_FETCH_DEPTH_KEY);
+    const n = stored ? Number(stored) : 0;
+    if (!Number.isFinite(n)) return 0;
+    return Math.max(0, Math.min(3, Math.floor(n)));
+  });
   const [webGroundingMode, setWebGroundingMode] = useState<WebGroundingMode>(() => {
     if (typeof window === "undefined") return "auto";
     const stored = window.localStorage.getItem(WEB_GROUNDING_KEY);
@@ -553,6 +582,10 @@ export default function Home() {
   useEffect(() => {
     window.localStorage.setItem(WEB_GROUNDING_KEY, webGroundingMode);
   }, [webGroundingMode]);
+
+  useEffect(() => {
+    window.localStorage.setItem(WEB_FETCH_DEPTH_KEY, String(webFetchDepth));
+  }, [webFetchDepth]);
 
   useEffect(() => {
     window.localStorage.setItem(
@@ -665,6 +698,7 @@ export default function Home() {
         fd.set("selfRefine", String(selfRefine));
         fd.set("styleId", synthStyleId);
         fd.set("webGroundingMode", webGroundingMode);
+        fd.set("webFetchDepth", String(webFetchDepth));
         if (opts.forceFullFanout) fd.set("forceFullFanout", "true");
         if (opts.forceWebGrounding) fd.set("forceWebGrounding", "true");
         for (const f of files) fd.append("attachments", f, f.name);
@@ -685,6 +719,7 @@ export default function Home() {
           styleId: synthStyleId,
           forceFullFanout: opts.forceFullFanout === true,
           webGroundingMode,
+          webFetchDepth,
           forceWebGrounding: opts.forceWebGrounding === true,
         });
       }
@@ -1009,6 +1044,8 @@ export default function Home() {
         onChangeSelfRefine={setSelfRefine}
         webGroundingMode={webGroundingMode}
         onChangeWebGroundingMode={setWebGroundingMode}
+        webFetchDepth={webFetchDepth}
+        onChangeWebFetchDepth={setWebFetchDepth}
         enabledProviders={enabledProviders}
         onToggleProvider={(p, enabled) =>
           setEnabledProviders((prev) => ({ ...prev, [p]: enabled }))

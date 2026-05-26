@@ -29,6 +29,8 @@ export function Settings({
   onChangeSelfRefine,
   webGroundingMode,
   onChangeWebGroundingMode,
+  webFetchDepth,
+  onChangeWebFetchDepth,
   enabledProviders,
   onToggleProvider,
   synthStyleId,
@@ -46,6 +48,8 @@ export function Settings({
   onChangeSelfRefine: (refine: boolean) => void;
   webGroundingMode: "off" | "auto" | "always";
   onChangeWebGroundingMode: (mode: "off" | "auto" | "always") => void;
+  webFetchDepth: number;
+  onChangeWebFetchDepth: (depth: number) => void;
   enabledProviders: Record<Provider, boolean>;
   onToggleProvider: (p: Provider, enabled: boolean) => void;
   synthStyleId: SynthStyleId;
@@ -259,6 +263,34 @@ export function Settings({
                 TAVILY_API_KEY
               </code>{" "}
               in <code className="text-[10px] px-1 rounded bg-neutral-100 dark:bg-neutral-800">.env.local</code> for higher-quality LLM-cleaned snippets (free, no card).
+            </p>
+
+            <label className="text-[10px] uppercase tracking-wide text-neutral-500 block mt-4 mb-2">
+              Auto-fetch top results
+            </label>
+            <div className="flex gap-1.5">
+              {[0, 1, 2, 3].map((depth) => (
+                <button
+                  key={depth}
+                  type="button"
+                  onClick={() => onChangeWebFetchDepth(depth)}
+                  className={`text-xs px-3 py-1.5 rounded-md transition flex-1 ${
+                    webFetchDepth === depth
+                      ? "bg-sky-500 text-white"
+                      : "bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 hover:bg-neutral-200 dark:hover:bg-neutral-700"
+                  }`}
+                >
+                  {depth === 0 ? "Off" : `${depth} page${depth === 1 ? "" : "s"}`}
+                </button>
+              ))}
+            </div>
+            <p className="text-[11px] text-neutral-500 mt-1.5 leading-relaxed">
+              When grounding fires, also fetch this many top URLs in full
+              (cleaned HTML → text, 3000 chars/page). Snippets are great for
+              breadth; full pages are needed to summarize articles or verify
+              specific claims. Adds ~1-2s latency per request and ~3-9k extra
+              chars per fan-out provider. Default <strong>Off</strong> —
+              snippets alone are enough for most queries.
             </p>
           </div>
 

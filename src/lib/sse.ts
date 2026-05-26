@@ -75,6 +75,14 @@ export type SseEvent =
       reason: string;
     }
   | {
+      // Wave 21b — server auto-fetched the top N URLs from the search
+      // result set and appended their cleaned bodies to the
+      // [WEB_CONTEXT] block. UI can surface "🌐 +📄 N pages" next to
+      // the grounded badge so the user sees the deeper grounding fired.
+      type: "web-fetched";
+      pages: Array<{ url: string; title: string | null; chars: number }>;
+    }
+  | {
       type: "subagent-plan";
       nodes: Array<{
         id: number;

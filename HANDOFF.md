@@ -2,8 +2,10 @@
 
 > Updated after every completed task. Read this first to resume work in a new session — it captures volatile state that `CLAUDE.md` doesn't (CLAUDE.md is stable architecture; this is "where are we right now").
 
-**Last updated:** 2026-05-27 (later)
-**Last action:** Wave 21a shipped — `apex_web_fetch` MCP tool (14th). Sibling to apex_web_search (snippets-only); fetches a specific URL, strips HTML to clean text, returns capped output. SSRF guards reject localhost / private / link-local / loopback / cloud-metadata IPs at both initial URL and final-redirect URL. 24h SQLite cache. 23 new tests covering the SSRF guards (9 vector cases), HTML strip (script/style/noscript/comments/entities/whitespace), and title extraction. 391/391 tests; type-check + build clean. Live smoke test: example.com fetched cleanly (146 chars); 5 dangerous URLs (localhost, AWS metadata, 10.x, file://, javascript:) all blocked. Commit `9e163c6`.
+**Last updated:** 2026-05-27 (evening)
+**Last action:** Wave 21b shipped — **auto-fetch top web results when grounding fires**. New `webFetchDepth` setting (0-3, default 0 = off). When grounding fires AND depth > 0, apex fetches the top N URLs in parallel via apex_web_fetch and appends their cleaned bodies to the [WEB_CONTEXT] block under a `## Full content of top results` subsection (3000 chars/page cap; failures skipped silently). New `web-fetched` SSE event + UI badge `📄 +N pages` next to the grounded badge on the synth panel (with tooltip listing every fetched URL + char count). Settings UI control: 4-state Off/1/2/3. 391/391 tests; type-check + build clean. Commit `<pending>`.
+
+Earlier today: Wave 21a — `apex_web_fetch` MCP tool (14th), commit `9e163c6`.
 
 Earlier today: Wave 20 trio + hotfix — (hotfix) history.channel field + Azure content-filter error classification; (20a) Claude wait indicator + Azure error classification surfaces in panel; (20b) category-mismatch preservation rule (caps confidence at 40) + cite-or-downgrade rule for web-grounded specifics + reworded web-context wrapper (USE THESE FACTS first, security-scoped-to-directives, anti-evasion clause) + `[grounded]` ack token per-provider chip; (20c) openai content-filter cross-provider substitution via `openai/gpt-oss-120b` on Groq + per-slot `[PROVIDER STATUS]` block for the default-fanout synth. Four commits: `1f686d8` (hotfix), `8961664` (20a+b), `1ebfd20` (20c), plus the Wave 19 trio below.
 
@@ -13,11 +15,12 @@ Web UI relocated to **http://localhost:3010** (port 3000 freed for another app).
 
 **Blocked on:** Nothing. Open: LFM-side validation of Waves 19 + 20 (no new signal yet).
 
-## Wave 21a — apex_web_fetch (2026-05-27, evening)
+## Wave 21 — full-page grounding (2026-05-27, evening)
 
 | Wave | What | Commit |
 |---|---|---|
 | 21a | **`apex_web_fetch` MCP tool** (14th). Curls a specific URL (http(s) only); strips HTML to clean text via regex (drops `<script>`/`<style>`/`<noscript>`/comments, decodes entities, collapses whitespace, preserves paragraph breaks). Non-HTML responses (text/markdown/json) pass through with whitespace normalized. Cap default 8000 chars (~2000 tokens); ceiling 30000. **SSRF envelope**: reject localhost / 127.x / 10.x / 172.16-31.x / 192.168.x / 169.254.x (cloud metadata) / IPv6 loopback / link-local / ULA. Final URL re-validated after redirects. 30s timeout. 24h SQLite cache keyed by SHA256(url + maxChars). 23 new tests covering all 9 SSRF vector cases + HTML strip semantics + title extraction. Live smoke test confirmed safe-host fetch + dangerous-URL blocks. | `9e163c6` |
+| 21b | **Auto-fetch top results when grounding fires**. New `webFetchDepth` setting (0-3, default 0 = off). When grounding fires AND depth > 0, apex fetches the top N URLs in parallel via webFetch (per-page cap 3000 chars; SSRF-failures / timeouts / 4xx silently skip and continue with snippets). Fetched bodies appended to [WEB_CONTEXT] block under a `## Full content of top results` subsection so models see breadth (8 snippets) AND depth (full pages) for the top hits. New `web-fetched` SSE event + UI badge `📄 +N pages` next to the existing `🌐 grounded` badge on the synth panel; tooltip lists every fetched URL + char count. Settings UI: Off / 1 page / 2 pages / 3 pages four-state. Backend latency add: ~1-2s parallelized; token cost +3-9k chars × 5 fan-out providers. | `<pending>` |
 
 ## Wave 20 — production-failure response (2026-05-27)
 

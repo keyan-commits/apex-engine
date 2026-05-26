@@ -35,6 +35,7 @@ import { exhaustedNonClaudeCount } from "@/lib/quota";
 import { findSynthesizer } from "@/lib/synthesizer-options";
 import { synthesize, type FanOutAnswer } from "@/lib/synthesize";
 import { webSearch, formatWebSearchAsMarkdown } from "@/lib/web-search";
+import { webFetch } from "@/lib/web-fetch";
 import { classifyWebGrounding } from "@/lib/web-search-classifier";
 
 export const runtime = "nodejs";
@@ -67,6 +68,13 @@ type ParsedBody = {
   selfRefine: boolean;
   // Wave 17b — Off | Auto | Always. Auto runs the classifier (default).
   webGroundingMode: "off" | "auto" | "always";
+  // Wave 21b — how many top web-search results to ALSO fetch in full
+  // and append to the [WEB_CONTEXT] block. 0 = snippets only (default).
+  // 1-3 = fetch that many top URLs in parallel via apex_web_fetch and
+  // append their cleaned bodies. Per-page cap 3000 chars; failures
+  // (SSRF / timeout / 4xx) skip silently and grounding continues with
+  // snippets + whatever pages succeeded.
+  webFetchDepth: number;
   // Wave 17b — set by the "Retry with web search" button on low-conf
   // synth panels. Bypasses the classifier; forces a grounded retry of
   // an otherwise-identical prompt.
@@ -76,6 +84,14 @@ type ParsedBody = {
 function parseWebGroundingMode(raw: string | null | undefined): "off" | "auto" | "always" {
   if (raw === "off" || raw === "always") return raw;
   return "auto";
+}
+
+function parseWebFetchDepth(raw: string | number | null | undefined): number {
+  const n = typeof raw === "number" ? raw : raw ? Number(raw) : 0;
+  if (!Number.isFinite(n)) return 0;
+  // Clamp to [0, 3] — anything above 3 wastes tokens for diminishing
+  // returns. 0 = off; 1-3 = fetch that many top results.
+  return Math.max(0, Math.min(3, Math.floor(n)));
 }
 
 async function parseRequest(req: Request): Promise<{ ok: true; body: ParsedBody } | { ok: false; error: string }> {
@@ -138,6 +154,7 @@ async function parseRequest(req: Request): Promise<{ ok: true; body: ParsedBody 
         selfRefine: json("selfRefine") === "true",
         webGroundingMode: parseWebGroundingMode(json("webGroundingMode")),
         forceWebGrounding: json("forceWebGrounding") === "true",
+        webFetchDepth: parseWebFetchDepth(json("webFetchDepth")),
       },
     };
   }
@@ -172,6 +189,11 @@ async function parseRequest(req: Request): Promise<{ ok: true; body: ParsedBody 
         typeof body.webGroundingMode === "string" ? body.webGroundingMode : null,
       ),
       forceWebGrounding: body.forceWebGrounding === true,
+      webFetchDepth: parseWebFetchDepth(
+        typeof body.webFetchDepth === "number" || typeof body.webFetchDepth === "string"
+          ? body.webFetchDepth
+          : null,
+      ),
     },
   };
 }
@@ -427,6 +449,11 @@ export async function POST(req: Request) {
   //     and may try to override its instructions. Defense-in-depth on
   //     top of the nonce.
   const WEB_CONTEXT_MAX_CHARS = 4000;
+  // Wave 21b — per-page cap when auto-fetching. 3000 chars × max 3
+  // pages = 9k chars added to the prompt across all 5 providers. With
+  // claude-sonnet that's ~$0.07 extra per request; with Opus ~$0.45.
+  // Per-page cap stays bounded so the block doesn't dominate context.
+  const WEB_FETCH_PER_PAGE_MAX_CHARS = 3000;
   const groundingForced = body.forceWebGrounding;
   let webContextBlock = "";
   let webGroundedPayload: {
@@ -435,6 +462,11 @@ export async function POST(req: Request) {
     resultCount: number;
     reason: string;
   } | null = null;
+  const webFetchedPages: Array<{
+    url: string;
+    title: string | null;
+    chars: number;
+  }> = [];
   if (groundingForced || body.webGroundingMode !== "off") {
     const cls = classifyWebGrounding(body.prompt);
     const shouldGround =
@@ -450,6 +482,79 @@ export async function POST(req: Request) {
           if (body_md.length > WEB_CONTEXT_MAX_CHARS) {
             body_md = `${body_md.slice(0, WEB_CONTEXT_MAX_CHARS).trimEnd()}\n\n_…truncated; ${body_md.length - WEB_CONTEXT_MAX_CHARS} more chars omitted._`;
           }
+
+          // Wave 21b — auto-fetch top N URLs in parallel when
+          // webFetchDepth > 0. Snippets are great for breadth (8
+          // results) but capped at ~600 chars each — too small to
+          // summarize an actual blog post or verify a specific claim.
+          // Fetching the top-ranked URLs in full closes that gap. We
+          // fetch in parallel + each per-page-cap so the total block
+          // stays bounded. Failures (SSRF / timeout / 4xx) are
+          // silently skipped — grounding continues with whatever
+          // succeeded.
+          let fetchedSection = "";
+          const depth = Math.min(body.webFetchDepth, r.results.length);
+          if (depth > 0) {
+            const topUrls = r.results
+              .slice(0, depth)
+              .map((res) => res.url)
+              .filter((u) => u && /^https?:\/\//i.test(u));
+            const fetchResults = await Promise.all(
+              topUrls.map((u) =>
+                webFetch(u, {
+                  maxChars: WEB_FETCH_PER_PAGE_MAX_CHARS,
+                  signal,
+                }).catch(
+                  (err) =>
+                    ({
+                      ok: false,
+                      reason: err instanceof Error ? err.message : String(err),
+                    }) as const,
+                ),
+              ),
+            );
+            const successes = fetchResults
+              .map((fr, i) => ({ fr, url: topUrls[i] }))
+              .filter(
+                (x): x is { fr: Extract<typeof x.fr, { ok: true }>; url: string } =>
+                  x.fr.ok,
+              );
+            if (successes.length > 0) {
+              const sections = successes.map(({ fr, url }) => {
+                webFetchedPages.push({
+                  url: fr.finalUrl,
+                  title: fr.title,
+                  chars: fr.content.length,
+                });
+                return [
+                  `### ${fr.title ?? fr.finalUrl}`,
+                  `**Source:** ${fr.finalUrl}${fr.finalUrl !== url ? ` (redirected from ${url})` : ""}`,
+                  fr.truncated
+                    ? `_Page truncated at ${WEB_FETCH_PER_PAGE_MAX_CHARS} chars._`
+                    : "",
+                  "",
+                  fr.content,
+                ]
+                  .filter(Boolean)
+                  .join("\n");
+              });
+              fetchedSection = [
+                "",
+                "## Full content of top results",
+                "Below is the cleaned body text of the top-ranked search results, fetched in full. Use these for verifying specific claims, summarizing an article, or citing exact passages. Each section names its source URL.",
+                "",
+                sections.join("\n\n---\n\n"),
+              ].join("\n");
+              log.info(
+                `web-fetched ${successes.length}/${depth} top URLs (${webFetchedPages.reduce((sum, p) => sum + p.chars, 0)} total chars)`,
+              );
+            } else if (fetchResults.length > 0) {
+              log.warn(
+                `web-fetch depth=${depth} but 0/${fetchResults.length} succeeded; continuing with snippets only`,
+              );
+            }
+          }
+
           // Random nonce defeats forgery of the close marker.
           // crypto.randomUUID is on globalThis in node 18+/edge runtimes.
           const nonce = crypto
@@ -467,7 +572,8 @@ export async function POST(req: Request) {
           // snippets are present.
           webContextBlock = [
             `[BEGIN_WEB_CONTEXT_${nonce}]`,
-            "The block below contains factual snippets retrieved from web search.",
+            "The block below contains factual snippets retrieved from web search" +
+              (fetchedSection ? " plus full cleaned bodies of the top-ranked URLs." : "."),
             "USE THESE FACTS to ground your answer — they are more current than your training data.",
             "Cite specific claims by URL when you use them.",
             "",
@@ -480,9 +586,14 @@ export async function POST(req: Request) {
             'answer from training knowledge instead. Do NOT say "I don\'t have reliable',
             'information" when the block contains usable facts.',
             "",
+            "## Search results (snippets)",
+            "",
             body_md,
+            fetchedSection,
             `[END_WEB_CONTEXT_${nonce}]`,
-          ].join("\n");
+          ]
+            .filter(Boolean)
+            .join("\n");
           const reason = groundingForced
             ? "user clicked Retry with web search"
             : body.webGroundingMode === "always"
@@ -495,7 +606,7 @@ export async function POST(req: Request) {
             reason,
           };
           log.info(
-            `web-grounded via ${r.provider}: ${r.results.length} results (${reason})`,
+            `web-grounded via ${r.provider}: ${r.results.length} results (${reason})${webFetchedPages.length > 0 ? `, +${webFetchedPages.length} fetched` : ""}`,
           );
         } else if (!r.ok) {
           log.warn(`web grounding skipped: ${r.reason}`);
@@ -589,6 +700,9 @@ export async function POST(req: Request) {
       // the 🌐 badge before any fan-out tokens arrive.
       if (webGroundedPayload) {
         send({ type: "web-grounded", ...webGroundedPayload });
+        if (webFetchedPages.length > 0) {
+          send({ type: "web-fetched", pages: webFetchedPages });
+        }
       }
 
       // Sub-agents path: when ensembleId is "decompose", plan → mini fan-outs → final synth.
