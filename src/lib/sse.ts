@@ -11,6 +11,19 @@ export type SseEvent =
       cached?: boolean;
     }
   | { type: "delta"; provider: Provider; text: string }
+  | {
+      // Wave 20b — emitted ONCE per provider when web grounding was
+      // active for the request. `grounded` reflects the provider's
+      // self-reported answer to "did you use the web-context block?":
+      // true if it emitted `[grounded]` at start, false if `[ungrounded]`.
+      // null when the provider didn't emit the ack token at all (older
+      // model that ignored the instruction). UI shows a small badge
+      // next to the provider label; synth uses the flags to detect
+      // silently-ignoring-the-context failures.
+      type: "grounded-ack";
+      provider: Provider;
+      grounded: boolean | null;
+    }
   | { type: "done"; provider: Provider; latencyMs?: number }
   | { type: "error"; provider: Provider | "synthesizer"; message: string }
   | { type: "warning"; message: string }

@@ -25,6 +25,16 @@ export type WebGroundingBadge = {
   reason: string;
 };
 
+export type SynthWaiting = {
+  // Wave 20a — provider labels still streaming (or not yet open) when
+  // the synth panel is rendering "Synthesizing…". Lets the user see
+  // which fan-out slot is the bottleneck (Claude is usually 5-20× the
+  // others on long contexts).
+  pendingLabels: string[];
+  // Seconds since the request started.
+  elapsedSec: number;
+};
+
 export function SynthesizerPanel({
   state,
   synthesizerLabel,
@@ -33,6 +43,7 @@ export function SynthesizerPanel({
   onContinueThread,
   webGrounding,
   onRetryWithWebSearch,
+  waiting,
 }: {
   state: SynthState;
   synthesizerLabel: string;
@@ -41,6 +52,7 @@ export function SynthesizerPanel({
   onContinueThread?: () => void;
   webGrounding?: WebGroundingBadge | null;
   onRetryWithWebSearch?: () => void;
+  waiting?: SynthWaiting | null;
 }) {
   const latency = formatLatency(state.latencyMs);
   const chars = state.text.length;
@@ -176,11 +188,30 @@ export function SynthesizerPanel({
             )}
           </>
         ) : (
-          <p className="text-neutral-400 italic">
-            {state.status === "idle"
-              ? "Will appear after all models respond."
-              : "Synthesizing…"}
-          </p>
+          <div className="text-neutral-400 italic">
+            {state.status === "idle" ? (
+              waiting && waiting.pendingLabels.length > 0 ? (
+                <>
+                  <span>
+                    Waiting for{" "}
+                    <strong className="font-medium not-italic text-neutral-300">
+                      {waiting.pendingLabels.join(", ")}
+                    </strong>{" "}
+                    · {waiting.elapsedSec}s
+                  </span>
+                  <div className="mt-1 text-[11px] not-italic text-neutral-500">
+                    The synth waits for every active provider before
+                    composing. Claude on long contexts can take 10-20s+;
+                    others typically finish in 1-6s.
+                  </div>
+                </>
+              ) : (
+                "Will appear after all models respond."
+              )
+            ) : (
+              "Synthesizing…"
+            )}
+          </div>
         )}
       </div>
       {(state.text || latency) && (

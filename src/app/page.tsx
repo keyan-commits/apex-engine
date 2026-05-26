@@ -15,7 +15,7 @@ import { SynthesizerPanel, type SynthState } from "@/components/SynthesizerPanel
 import type { AttachmentMeta } from "@/lib/attachments";
 import type { HistoryAnswer, HistoryEntry } from "@/lib/history";
 import type { Project } from "@/lib/projects";
-import { PROVIDERS, type Provider } from "@/lib/providers";
+import { PROVIDER_LABELS, PROVIDERS, type Provider } from "@/lib/providers";
 import {
   DEFAULT_ENSEMBLE_ID,
   ENSEMBLE_LIST,
@@ -71,6 +71,10 @@ type WebGroundingState = {
 
 type State = {
   submitting: boolean;
+  // Wave 20a — epoch-ms when "submit" was dispatched. Used to compute
+  // the "Waiting for Claude · 12s" indicator on the synth panel. null
+  // when not submitting or on history-view.
+  submittingStartedAt: number | null;
   currentPrompt: string | null;
   selectedHistoryId: number | null;
   historyRefreshKey: number;
@@ -82,6 +86,13 @@ type State = {
   attachments: AttachmentMeta[] | null;
   classification: ClassificationDisplay | null;
   webGrounding: WebGroundingState | null;
+  // Wave 20b — per-provider self-reported "did you use the web context"
+  // flag. Populated only when the request triggered grounding. Values:
+  // true = provider emitted [grounded], false = [ungrounded], null =
+  // provider ignored the ack instruction entirely. Used by ModelPanel
+  // to show a small chip so silently-ignoring-the-context (Llama
+  // failure) is visible at a glance.
+  groundedByProvider: Partial<Record<Provider, boolean | null>>;
 };
 
 function initialPanel(): PanelState {
@@ -100,6 +111,7 @@ function initialPanel(): PanelState {
 function initialState(): State {
   return {
     submitting: false,
+    submittingStartedAt: null,
     currentPrompt: null,
     selectedHistoryId: null,
     historyRefreshKey: 0,
@@ -117,6 +129,7 @@ function initialState(): State {
     attachments: null,
     classification: null,
     webGrounding: null,
+    groundedByProvider: {},
   };
 }
 
@@ -152,6 +165,7 @@ function reducer(state: State, action: Action): State {
       return {
         ...fresh,
         submitting: true,
+        submittingStartedAt: Date.now(),
         currentPrompt: action.prompt,
         selectedHistoryId: null,
         historyRefreshKey: state.historyRefreshKey,
@@ -160,7 +174,7 @@ function reducer(state: State, action: Action): State {
       };
     }
     case "settle":
-      return { ...state, submitting: false };
+      return { ...state, submitting: false, submittingStartedAt: null };
     case "cancel-all": {
       // Mark any in-flight panels as cancelled.
       const cancelled: Record<Provider, PanelState> = { ...state.models };
@@ -177,6 +191,7 @@ function reducer(state: State, action: Action): State {
       return {
         ...state,
         submitting: false,
+        submittingStartedAt: null,
         models: cancelled,
         synth,
         notice: "Cancelled",
@@ -206,6 +221,7 @@ function reducer(state: State, action: Action): State {
       const e = action.entry;
       return {
         submitting: false,
+        submittingStartedAt: null,
         currentPrompt: e.prompt,
         selectedHistoryId: e.id,
         historyRefreshKey: state.historyRefreshKey,
@@ -237,6 +253,7 @@ function reducer(state: State, action: Action): State {
               reason: "loaded from history (provider/result-count not stored)",
             }
           : null,
+        groundedByProvider: {},
       };
     }
     case "sse": {
@@ -385,6 +402,17 @@ function reducer(state: State, action: Action): State {
               query: ev.query,
               resultCount: ev.resultCount,
               reason: ev.reason,
+            },
+          };
+        case "grounded-ack":
+          // Wave 20b — per-provider self-report of whether it used the
+          // web context. Diagnostic only; the actual behavior change
+          // is in the reworded wrapper. UI shows a chip on ModelPanel.
+          return {
+            ...state,
+            groundedByProvider: {
+              ...state.groundedByProvider,
+              [ev.provider]: ev.grounded,
             },
           };
       }
@@ -572,6 +600,18 @@ export default function Home() {
     return () => window.removeEventListener("keydown", onKey);
   }, [state.submitting]);
 
+  // Wave 20a — 1s tick while submitting, so the "Waiting for X · Ns"
+  // indicator on the synth panel updates in real time. The interval
+  // only runs while at least one fan-out provider is still pending and
+  // the synth hasn't started yet (otherwise "Synthesizing…" takes over).
+  const [nowTick, setNowTick] = useState<number>(() => Date.now());
+  useEffect(() => {
+    if (!state.submitting) return;
+    setNowTick(Date.now());
+    const id = window.setInterval(() => setNowTick(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [state.submitting]);
+
   async function handleSubmit(
     prompt: string,
     files: File[] = [],
@@ -683,6 +723,29 @@ export default function Home() {
   const viewingHistory = state.selectedHistoryId !== null;
   const synthInFlight =
     state.synth.status === "open" || state.synth.status === "streaming";
+  // Wave 20a — when the synth hasn't started yet but the fan-out is
+  // running, surface which provider(s) are the bottleneck. The synth
+  // waits for ALL valid fan-out answers before composing; if Claude is
+  // 15s+ behind everyone else, the user should see that.
+  const waitingForFanOut: {
+    pendingLabels: string[];
+    elapsedSec: number;
+  } | null =
+    state.submitting &&
+    !synthInFlight &&
+    state.synth.status === "idle" &&
+    state.submittingStartedAt !== null
+      ? {
+          pendingLabels: PROVIDERS.filter((p) => {
+            const s = state.models[p].status;
+            return s === "open" || s === "streaming";
+          }).map((p) => PROVIDER_LABELS[p]),
+          elapsedSec: Math.max(
+            0,
+            Math.round((nowTick - state.submittingStartedAt) / 1000),
+          ),
+        }
+      : null;
   const showSynth =
     synthesizerEnabled ||
     state.synth.text ||
@@ -872,7 +935,12 @@ export default function Home() {
           ) : (
             <section className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
               {PROVIDERS.map((p) => (
-                <ModelPanel key={p} provider={p} state={state.models[p]} />
+                <ModelPanel
+                  key={p}
+                  provider={p}
+                  state={state.models[p]}
+                  grounded={state.groundedByProvider[p]}
+                />
               ))}
             </section>
           )}
@@ -888,6 +956,7 @@ export default function Home() {
                   ? () => setContinueThreadId(state.selectedHistoryId)
                   : undefined
               }
+              waiting={waitingForFanOut}
               webGrounding={state.webGrounding}
               onRetryWithWebSearch={
                 !viewingHistory &&

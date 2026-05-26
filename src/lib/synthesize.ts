@@ -478,7 +478,29 @@ export function buildSynthPrompt(
   // "re-run with more models" affordance when the score is low.
   const confidenceClause = `\n\nCONFIDENCE CALIBRATION: After your answer (and after the optional Notable Disagreements / Off-Topic Answers sections, if any), append a final H2 section exactly titled "## Confidence". Under that heading, write a single line containing an integer 0-100 followed by a brief one-sentence justification. 0 = pure speculation. 50 = informed guess. 80 = supported by multiple model agreement. 100 = directly answered, well-known, no uncertainty. Be honest — low confidence is more useful than false certainty.`;
 
-  return `You are a synthesizer. ${answers.length} AI models were asked the same question.${rolePreamble} Your job: produce a single consolidated best answer by drawing on the strongest, most accurate insights from each response. Resolve contradictions. Cite sources by model name only when their views meaningfully differ. Be direct and useful — no preamble about your role.${subjectFidelityClause}${consistencyClause}${confidenceClause}${stylePreamble}
+  // Wave 20b — category-mismatch preservation. Real failure caught
+  // 2026-05-27: user asked "what is the best LLM" but web grounding
+  // returned results about AI presentation TOOLS (Gamma, Canva,
+  // Beautiful.ai — software platforms, not LLMs). DeepSeek correctly
+  // flagged this; the synth still labeled its table "Recommended LLM"
+  // and put platforms in it. This clause requires the synth to
+  // PRESERVE that observation when any reviewer raises it, and CAP
+  // confidence at 40 so the calibrated score reflects the gap.
+  const categoryMismatchClause = `\n\nCATEGORY-MISMATCH PRESERVATION: If ANY reviewer flags that the available evidence (web search results, attachments, caller context) belongs to a DIFFERENT CATEGORY than the user's question (e.g., user asked about LLMs but the evidence covers SaaS tools / a library vs a framework / a hardware product vs a software service), you MUST: (1) lead the Summary with that mismatch verbatim, naming both categories; (2) explicitly restate which question your synthesis is actually answering given the evidence; (3) NEVER relabel items across categories (do not call a SaaS product an "LLM", do not call a library a "framework", etc.). When this rule fires, the Confidence score in the trailing "## Confidence" section MUST be capped at 40 regardless of how strongly the reviewers agreed — the score reflects the gap between the user's question and what was actually answered, not the consensus within the wrong-category answer.`;
+
+  // Wave 20b — cite-or-downgrade for web-grounded claims. Real failure
+  // same session: the synth confidently included "GPT-5 (OpenAI)" as a
+  // recommendation. GPT-5's existence is speculative; web grounding
+  // may have surfaced articles speculating about it, and the synth
+  // promoted speculation into a recommendation at confidence 85. This
+  // clause requires every specific product/version/numerical claim to
+  // carry either a [source: URL] citation or an [unverified] tag.
+  // Applies to ALL such claims regardless of perceived recency —
+  // version numbers and product names are exactly where speculation
+  // hides; a year-token heuristic would be leaky.
+  const citeOrDowngradeClause = `\n\nCITE-OR-DOWNGRADE for specific claims: Any specific product name, version string, release date, benchmark number, price, or factual claim in your synthesis that originated in web-search results (NOT in a model's training knowledge / NOT in the caller's artifact / NOT in caller-supplied context) MUST be either (a) followed by \`[source: <URL or short-cite>]\` pointing to the web-result entry it came from, or (b) prefixed with \`[unverified — surfaced by web search, not corroborated by caller context]\`. A claim that fails both is treated as a hallucination and MUST be removed, not softened. This applies to ALL such claims regardless of how recent or new they appear — speculative version numbers (e.g. "GPT-5") that lack a verifying source should be omitted entirely. The rule does NOT apply to widely-known stable facts ("Python is a programming language") — only to specific named entities, versions, dates, and numerical claims that depend on web data for accuracy.`;
+
+  return `You are a synthesizer. ${answers.length} AI models were asked the same question.${rolePreamble} Your job: produce a single consolidated best answer by drawing on the strongest, most accurate insights from each response. Resolve contradictions. Cite sources by model name only when their views meaningfully differ. Be direct and useful — no preamble about your role.${subjectFidelityClause}${categoryMismatchClause}${citeOrDowngradeClause}${consistencyClause}${confidenceClause}${stylePreamble}
 
 ## Original question
 

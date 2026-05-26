@@ -26,9 +26,16 @@ function formatLatency(ms: number | null): string | null {
 export function ModelPanel({
   provider,
   state,
+  grounded,
 }: {
   provider: Provider;
   state: PanelState;
+  // Wave 20b — when this request used web grounding, the provider's
+  // self-reported ack: true="used the web context", false="didn't",
+  // null="ignored the ack instruction entirely" (older model). undefined
+  // = no grounding active this request. Surfaces as a small chip next
+  // to the provider label so silently-ignoring-the-context is visible.
+  grounded?: boolean | null;
 }) {
   const latency = formatLatency(state.latencyMs);
   const chars = state.text.length;
@@ -50,6 +57,30 @@ export function ModelPanel({
                 title="Served from response cache"
               >
                 cached
+              </span>
+            )}
+            {grounded === true && (
+              <span
+                className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-300"
+                title="Provider self-reported using the web-context block"
+              >
+                🌐 grounded
+              </span>
+            )}
+            {grounded === false && (
+              <span
+                className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400"
+                title="Provider self-reported NOT using the web-context block (fell back to training knowledge)"
+              >
+                ungrounded
+              </span>
+            )}
+            {grounded === null && (
+              <span
+                className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300"
+                title="Provider ignored the [grounded]/[ungrounded] ack instruction — older model. Watch this slot for silent context-ignoring."
+              >
+                no-ack
               </span>
             )}
           </h2>
