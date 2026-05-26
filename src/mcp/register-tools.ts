@@ -36,6 +36,7 @@ import {
   resolvePanelSynthesizerId,
 } from "@/lib/panel-status";
 import { webSearch, formatWebSearchAsMarkdown } from "@/lib/web-search";
+import { webFetch, formatWebFetchAsMarkdown } from "@/lib/web-fetch";
 import {
   loadReviewFile,
   REVIEW_FILE_MODE_MAX_CHARS,
@@ -65,6 +66,7 @@ export const REGISTERED_TOOL_NAMES = [
   "apex_web_search",
   "apex_bootstrap_project",
   "apex_query_source",
+  "apex_web_fetch",
 ];
 
 const CODE_REVIEW_MAX_CHARS = 8_000;
@@ -1264,6 +1266,36 @@ export function registerAllTools(server: McpServer): void {
       return {
         content: [
           { type: "text", text: withFlushNotice(formatWebSearchAsMarkdown(result)) },
+        ],
+      };
+    },
+  );
+
+  server.tool(
+    "apex_web_fetch",
+    "**Fetch a specific URL and return cleaned text.** Sibling to apex_web_search — search returns 8 snippet-sized results (~600 chars each); apex_web_fetch curls one specific URL and returns the full body (cap default 8000 chars, up to 30000). HTML is stripped to clean text (drops `<script>`/`<style>`/comments, decodes entities, collapses whitespace). Non-HTML responses (text, markdown, JSON) pass through with whitespace normalized.\n\nUse this when:\n- A search snippet is too short to ground an answer (e.g. wanting to summarize an actual blog post, not just its first 600 chars).\n- The caller knows the exact URL (an Anthropic news post, an official product page) and wants the page's content as evidence.\n- A persona's review needs to verify a specific claim against a primary source.\n\n**Security**: http(s) only; SSRF guards reject `localhost` / private IPv4 ranges (10.x / 172.16-31.x / 192.168.x) / link-local (169.254.x — cloud metadata) / IPv6 loopback + link-local + ULA. Final URL re-validated after redirects. 30s timeout. 24h SQLite cache keyed by (url, maxChars).",
+    {
+      url: z
+        .string()
+        .min(1)
+        .describe(
+          "Absolute URL to fetch. Must start with http:// or https://. Will be rejected if the host resolves to a private/loopback/link-local address.",
+        ),
+      maxChars: z
+        .number()
+        .int()
+        .min(100)
+        .max(30_000)
+        .default(8_000)
+        .describe(
+          "Maximum chars of body content to return. Default 8000 (~2000 tokens, cheap to inject across 5 fan-out providers). Max 30000.",
+        ),
+    },
+    async ({ url, maxChars }) => {
+      const r = await webFetch(url, { maxChars });
+      return {
+        content: [
+          { type: "text", text: withFlushNotice(formatWebFetchAsMarkdown(r)) },
         ],
       };
     },

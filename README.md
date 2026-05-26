@@ -85,7 +85,7 @@ pnpm dev
 
 ### MCP setup — read this if you use Claude Code or Claude Desktop
 
-apex-engine ships an MCP server (12 tools: apex_fanout / apex_synthesize / apex_decompose / apex_report / apex_self_check / apex_qa_review / apex_self_security_check / apex_code_review / apex_security_review / apex_history_search / apex_web_search / apex_bootstrap_project). **Every apex-engine user should run the setup once.**
+apex-engine ships an MCP server (14 tools: apex_fanout / apex_synthesize / apex_decompose / apex_report / apex_self_check / apex_qa_review / apex_self_security_check / apex_code_review / apex_security_review / apex_history_search / apex_web_search / apex_web_fetch / apex_bootstrap_project / apex_query_source). **Every apex-engine user should run the setup once.**
 
 For downstream projects that use apex-engine MCP, the first apex_code_review / apex_security_review call surfaces a 💡 nudge telling the calling CC session to run `apex_bootstrap_project({ projectRoot: "<absolute-path>" })`. That writes 6 template MDs to `<projectRoot>/.apex/` (a project frame + 5 per-persona addenda). The calling CC session then opens each template, fills in the placeholders based on its project knowledge, and re-runs review tools with `projectRoot` set — getting project-grounded maker-checker review without manual setup instructions.
 
