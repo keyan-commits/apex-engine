@@ -145,6 +145,13 @@ export type HistoryAnswer = {
   inputTokens?: number;
   outputTokens?: number;
   costUsd?: number;
+  // Wave 20c — set when this slot was filled by a substitute model
+  // due to a primary-provider failure (currently: openai → gpt-oss-120b
+  // on Groq when Azure content filter rejected the prompt). `from` is
+  // the original (rejected) model id; `reason` is the classified error
+  // message. The slot keeps its provider identity (the panel still
+  // reads "GPT") with a "substituted: <model>" tag.
+  substituted?: { from: string; reason: string };
 };
 
 export type HistoryEntry = {

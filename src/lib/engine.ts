@@ -19,7 +19,7 @@ import { markPrimaryExhausted } from "./quota";
 import { roleSuffixFor, type RoleId } from "./roles";
 import { resolveModel } from "./tiers";
 
-const DEFAULT_SYSTEM_PROMPT =
+export const DEFAULT_SYSTEM_PROMPT =
   "You are a helpful, knowledgeable assistant. Answer the user's question directly, clearly, and concisely. Use markdown for formatting when appropriate. " +
   // Subject fidelity (Wave 13). Real failure mode caught 2026-05-24:
   // gpt-4o-mini silently substituted \"iPhone 14 Pro Max\" when the user
@@ -408,6 +408,35 @@ async function* streamGroqText(
   }
   if (captured) throw captured;
   return await drainUsage(result);
+}
+
+// Wave 20c — openai content-filter cross-provider substitution.
+// When the openai slot (GPT-4o-mini via GitHub Models / Azure) hits
+// Azure's content_filter, the slot would otherwise drop and the panel
+// would degrade from 5 reviewers to 4. This helper streams a
+// substitute completion via Groq (NOT Azure-fronted, so the filter
+// doesn't apply) using openai/gpt-oss-120b — OpenAI's open-weights
+// 120B model, Production tier on Groq (verified 2026-05-27), same
+// "OpenAI" brand identity so the GPT slot's panel label stays
+// conceptually consistent.
+//
+// Caller: /api/ask catches content-filter classification on the
+// openai stream, then uses THIS function to fill the slot. The result
+// is tagged `substituted: { from, reason }` so the UI + history can
+// show the substitution clearly.
+export const OPENAI_FILTER_FALLBACK_MODEL = "openai/gpt-oss-120b";
+
+export function streamOpenaiContentFilterFallback(
+  prompt: string,
+  systemPrompt: string,
+  signal: AbortSignal,
+): AsyncGenerator<string, StreamUsage | null, undefined> {
+  return streamGroqText(
+    OPENAI_FILTER_FALLBACK_MODEL,
+    prompt,
+    systemPrompt,
+    signal,
+  );
 }
 
 // Wave 15a — DeepSeek text-only streaming. Same shape as streamGroqText

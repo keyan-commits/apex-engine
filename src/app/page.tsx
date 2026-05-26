@@ -415,6 +415,27 @@ function reducer(state: State, action: Action): State {
               [ev.provider]: ev.grounded,
             },
           };
+        case "substituted":
+          // Wave 20c — server is about to stream from a substitute
+          // model (openai content-filter → gpt-oss-120b via Groq).
+          // Mark the panel so the user sees the substitution before
+          // the new stream's chunks arrive. The substitute model
+          // replaces the original in state.models[provider].model.
+          return {
+            ...state,
+            models: {
+              ...state.models,
+              [ev.provider]: {
+                ...state.models[ev.provider],
+                model: ev.substituteModel,
+                substituted: { from: state.models[ev.provider].model ?? "?", reason: ev.reason },
+                // The slot may have shown an error briefly before the
+                // substitute kicked in — clear it.
+                error: null,
+                status: "streaming",
+              },
+            },
+          };
       }
     }
   }

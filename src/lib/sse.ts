@@ -24,6 +24,18 @@ export type SseEvent =
       provider: Provider;
       grounded: boolean | null;
     }
+  | {
+      // Wave 20c — emitted when the openai slot was rejected by
+      // Azure's content management policy and apex retried via the
+      // configured fallback model (openai/gpt-oss-120b via Groq).
+      // UI tags the panel with "GPT · substituted: <model>". Synth
+      // sees the substitution in [PROVIDER STATUS] and attributes the
+      // answer to the substitute model's perspective (not GPT's).
+      type: "substituted";
+      provider: Provider;
+      substituteModel: string;
+      reason: string;
+    }
   | { type: "done"; provider: Provider; latencyMs?: number }
   | { type: "error"; provider: Provider | "synthesizer"; message: string }
   | { type: "warning"; message: string }

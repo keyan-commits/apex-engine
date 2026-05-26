@@ -15,6 +15,13 @@ export type PanelState = {
   latencyMs: number | null;
   role: RoleId | null;
   cached: boolean;
+  // Wave 20c — populated when this slot's primary provider was
+  // rejected (e.g. openai Azure content filter) and apex retried via
+  // a substitute model from a different vendor. The slot keeps its
+  // identity in the panel but the actual content came from `model`
+  // (overwritten by the substituted model id); the original is in
+  // `substituted.from`.
+  substituted?: { from: string; reason: string };
 };
 
 function formatLatency(ms: number | null): string | null {
@@ -57,6 +64,14 @@ export function ModelPanel({
                 title="Served from response cache"
               >
                 cached
+              </span>
+            )}
+            {state.substituted && (
+              <span
+                className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-orange-100 dark:bg-orange-900/40 text-orange-700 dark:text-orange-300"
+                title={`Slot substituted because the primary model rejected the prompt. Original: ${state.substituted.from}. Reason: ${state.substituted.reason}`}
+              >
+                ↻ substituted
               </span>
             )}
             {grounded === true && (

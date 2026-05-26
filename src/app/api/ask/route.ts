@@ -3,8 +3,13 @@ import { recordAutoBug } from "@/lib/auto-feedback";
 import { answersSignature, cacheGet, cacheKey, cachePut } from "@/lib/cache";
 import { classify } from "@/lib/classify";
 import { estimateCost } from "@/lib/cost";
-import { fanOut } from "@/lib/engine";
-import { userFacingMessage } from "@/lib/errors";
+import {
+  DEFAULT_SYSTEM_PROMPT,
+  fanOut,
+  OPENAI_FILTER_FALLBACK_MODEL,
+  streamOpenaiContentFilterFallback,
+} from "@/lib/engine";
+import { classifyError, userFacingMessage } from "@/lib/errors";
 import { detectFollowUp } from "@/lib/follow-up";
 import {
   noteCacheMiss,
@@ -818,9 +823,92 @@ export async function POST(req: Request) {
             } catch (err) {
               const latencyMs = Date.now() - (providerStart[item.provider] ?? Date.now());
               acc.latencyMs = latencyMs;
-              const message = userFacingMessage(err);
-              acc.error = message;
-              send({ type: "error", provider: item.provider, message });
+              const classified = classifyError(err);
+              const message = classified.message;
+
+              // Wave 20c — openai content-filter cross-provider
+              // substitution. When the openai slot is rejected by
+              // Azure's content management policy, retry via
+              // openai/gpt-oss-120b on Groq (NOT Azure-fronted, same
+              // OpenAI brand). Env-gated; default "substitute".
+              // Cache key still uses the resolved (provider, model)
+              // pair so the substitute response doesn't pollute the
+              // gpt-4o-mini cache (and vice versa).
+              const fallbackEnabled =
+                process.env.APEX_OPENAI_FILTER_FALLBACK !== "skip";
+              if (
+                classified.kind === "content-filter" &&
+                item.provider === "openai" &&
+                fallbackEnabled &&
+                !acc.text // don't re-stream if some tokens already
+                          // arrived before the filter fired
+              ) {
+                try {
+                  send({
+                    type: "substituted",
+                    provider: "openai",
+                    substituteModel: OPENAI_FILTER_FALLBACK_MODEL,
+                    reason: message,
+                  });
+                  const subStart = Date.now();
+                  const subStream = streamOpenaiContentFilterFallback(
+                    promptWithContext,
+                    systemPrompt ?? DEFAULT_SYSTEM_PROMPT,
+                    signal,
+                  );
+                  for await (const chunk of subStream) {
+                    acc.text += chunk;
+                    send({
+                      type: "delta",
+                      provider: item.provider,
+                      text: chunk,
+                    });
+                  }
+                  acc.error = null;
+                  acc.latencyMs = Date.now() - subStart;
+                  acc.model = OPENAI_FILTER_FALLBACK_MODEL;
+                  acc.substituted = {
+                    from: item.model,
+                    reason: message,
+                  };
+                  if (acc.text) {
+                    const subKey = cacheKey({
+                      kind: "fanout",
+                      provider: item.provider,
+                      model: OPENAI_FILTER_FALLBACK_MODEL,
+                      prompt: promptWithContext,
+                      systemPrompt: systemPrompt ?? null,
+                      role: item.role ?? null,
+                      upstreamSignature: body.attachments.length
+                        ? body.attachments
+                            .map((a) => a.sha256)
+                            .sort()
+                            .join(",")
+                        : "",
+                    });
+                    cachePut(subKey, acc.text);
+                  }
+                  send({
+                    type: "done",
+                    provider: item.provider,
+                    latencyMs: acc.latencyMs,
+                  });
+                  return; // skip the normal error/usage-drain path
+                } catch (subErr) {
+                  const subMsg = userFacingMessage(subErr);
+                  acc.error = `Content filter + substitute failed: ${subMsg}`;
+                  send({
+                    type: "error",
+                    provider: item.provider,
+                    message: acc.error,
+                  });
+                  // fall through to noteProviderFailure / recordAutoBug
+                  // for the SECONDARY failure
+                }
+              } else {
+                acc.error = message;
+                send({ type: "error", provider: item.provider, message });
+              }
               const code = errorCodeOf(err);
               // Don't pollute the bug tracker with transient upstream
               // rate-limits / retries / timeouts — those are
@@ -946,6 +1034,33 @@ export async function POST(req: Request) {
             });
           }
 
+          // Wave 20c — telling the synth about substitutions + errored
+          // slots. The synth filters out errored answers (via
+          // synthesize.ts's valid filter), so it would otherwise see
+          // no trace of the openai content-filter event. Build a
+          // [PROVIDER STATUS] block describing any substitutions or
+          // errors, and append to the synth's systemPrompt. The synth
+          // uses this to attribute substituted answers to the
+          // substitute model (not the original) and to mention dropped
+          // slots in its Summary when applicable.
+          const providerStatusLines: string[] = [];
+          for (const p of PROVIDERS) {
+            const a = answerMap[p];
+            if (a.substituted) {
+              providerStatusLines.push(
+                `- ${p}: SUBSTITUTED — primary model "${a.substituted.from}" was rejected (${a.substituted.reason}); slot was filled by "${a.model}" via a different vendor. Treat this answer as the perspective of ${a.model}, NOT the original model.`,
+              );
+            } else if (a.error && enabled[p] !== false) {
+              providerStatusLines.push(
+                `- ${p}: ERRORED — ${a.error}. This slot's perspective is missing.`,
+              );
+            }
+          }
+          const providerStatusBlock =
+            providerStatusLines.length > 0
+              ? `[PROVIDER STATUS]\n${providerStatusLines.join("\n")}\n[END PROVIDER STATUS]\n\nIMPORTANT: When attributing answers in your synthesis, use the ACTUAL model that responded (per [PROVIDER STATUS] above), not the slot's primary model. Mention any errored / substituted slots in the Summary.\n\n`
+              : "";
+          const synthSystemPromptWithStatus = providerStatusBlock + (synthSystemPrompt ?? "");
           send({ type: "synth-open" });
           synthText = "";
           const synthStart = Date.now();
@@ -953,7 +1068,7 @@ export async function POST(req: Request) {
             kind: "synth",
             model: effectiveSynthesizerId ?? "default",
             prompt: promptWithContext,
-            systemPrompt: systemPrompt ?? null,
+            systemPrompt: synthSystemPromptWithStatus,
             role: null,
             upstreamSignature: answersSignature(
               synthInput.map((a) => ({ provider: a.provider, text: a.text })),
@@ -976,7 +1091,7 @@ export async function POST(req: Request) {
             } = { current: null };
             try {
               for await (const chunk of synthesize(promptWithContext, synthInput, {
-                systemPrompt: synthSystemPrompt,
+                systemPrompt: synthSystemPromptWithStatus,
                 synthesizerId: effectiveSynthesizerId,
                 signal,
                 styleId: body.styleId,
