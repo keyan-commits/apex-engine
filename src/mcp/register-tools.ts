@@ -40,6 +40,8 @@ import {
   loadReviewFile,
   REVIEW_FILE_MODE_MAX_CHARS,
 } from "@/lib/review-file-loader";
+import { loadSources, findSource } from "@/lib/apex-sources";
+import { querySource, formatQueryResult } from "@/lib/apex-source-query";
 
 // Shared MCP tool registration — called by BOTH the stdio entry point
 // (src/mcp/server.ts) and the HTTP entry point (src/mcp/http-server.ts).
@@ -62,6 +64,7 @@ export const REGISTERED_TOOL_NAMES = [
   "apex_history_search",
   "apex_web_search",
   "apex_bootstrap_project",
+  "apex_query_source",
 ];
 
 const CODE_REVIEW_MAX_CHARS = 8_000;
@@ -1260,6 +1263,79 @@ export function registerAllTools(server: McpServer): void {
         content: [
           { type: "text", text: withFlushNotice(formatWebSearchAsMarkdown(result)) },
         ],
+      };
+    },
+  );
+
+  server.tool(
+    "apex_query_source",
+    "**Read-only query against a project-declared data source.** Wave 19c-proper. Reads `<projectRoot>/.apex/sources.json` to find the source by id, then executes the query under that source's declared constraints — read-only by construction. Two source types supported:\n\n**sqlite** — `query` is a SELECT statement. The source's `allowedTables` is the allowlist; every table referenced in the query must be in it. Forbidden keywords (INSERT/UPDATE/DELETE/DDL/PRAGMA/etc.) are rejected. LIMIT is enforced — appended if missing, clamped to source.maxRows if too high. SQLite opened in readonly mode.\n\n**csv-dir** — `query` is a CSV filename (flat — no slashes, no `..`). Must match one of the source's `allowedPatterns` glob entries. First line is treated as the header; remaining rows are parsed as comma-separated with double-quote escaping.\n\nThe tool returns a markdown table. Use this when you need to verify mapping/ownership/identity/population claims against project data — pair the result with `evidence` on apex_code_review / apex_security_review to drive evidence-based reviews. The personas can ALSO be told to call this themselves via their `Recommended Fix` when they need more data.\n\n.apex/sources.json schema (caller-side authored, committed to the consumer's repo):\n\n```\n{\n  \"sources\": [\n    {\n      \"id\": \"kilpatricks-db\",\n      \"type\": \"sqlite\",\n      \"path\": \"data/kilpatricks.db\",\n      \"readonly\": true,\n      \"allowedTables\": [\"orders\", \"customers\", \"mapping\"],\n      \"maxRows\": 1000\n    },\n    {\n      \"id\": \"lib-csv\",\n      \"type\": \"csv-dir\",\n      \"path\": \"_private/csv/lib\",\n      \"readonly\": true,\n      \"allowedPatterns\": [\"*.csv\"],\n      \"maxRows\": 5000\n    }\n  ]\n}\n```",
+    {
+      projectRoot: projectRootArg,
+      sourceId: z
+        .string()
+        .min(1)
+        .describe("The `id` of a source declared in `<projectRoot>/.apex/sources.json`."),
+      query: z
+        .string()
+        .min(1)
+        .describe(
+          "For sqlite sources: a SELECT statement against allowedTables. For csv-dir sources: a flat CSV filename matching allowedPatterns.",
+        ),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .optional()
+        .describe(
+          "Override the source's default row cap (clamped to source.maxRows). Default: source.maxRows.",
+        ),
+    },
+    async ({ projectRoot, sourceId, query, limit }) => {
+      const cfg = loadSources(projectRoot);
+      if (!cfg.ok) {
+        return {
+          content: [
+            { type: "text", text: withFlushNotice(`apex_query_source: ${cfg.reason}`) },
+          ],
+        };
+      }
+      const source = findSource(cfg.sources, sourceId);
+      if (!source) {
+        const available = cfg.sources.map((s) => `${s.id} (${s.type})`).join(", ");
+        return {
+          content: [
+            {
+              type: "text",
+              text: withFlushNotice(
+                `apex_query_source: sourceId "${sourceId}" not declared. Available: ${available || "(none)"}`,
+              ),
+            },
+          ],
+        };
+      }
+      // Belt-and-braces — schema requires readonly:true; this is the
+      // server-side enforcement.
+      if (!source.readonly) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: withFlushNotice(
+                `apex_query_source: source "${sourceId}" is not marked readonly; refusing to query`,
+              ),
+            },
+          ],
+        };
+      }
+      const result = querySource({
+        projectRoot: projectRoot!,
+        source,
+        query,
+        ...(limit !== undefined ? { limit } : {}),
+      });
+      return {
+        content: [{ type: "text", text: withFlushNotice(formatQueryResult(result)) }],
       };
     },
   );
