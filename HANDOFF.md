@@ -6,19 +6,19 @@
 
 ## ⏭️ NOW — 2026-05-27
 
-**State.** Branch `main` at `adb41c6` (Wave 25 SHA-backfill fixup) + this commit on top. Working tree clean apart from this HANDOFF + `INDEX.yaml`. Resume: `pnpm dev` (http://localhost:3010) · `pnpm mcp:http` · `pnpm qa:check` · `pnpm security:check` · `pnpm test:run`.
+**State.** Branch `main` at `59f0a66` (Wave 27 archive) + this fixup on top. Working tree clean apart from an auto-generated `next-env.d.ts` toggle (Next.js build-path noise, unrelated). Resume: `pnpm dev` (http://localhost:3010) · `pnpm mcp:http` · `pnpm qa:check` · `pnpm security:check` · `pnpm test:run`.
 
 **Shipped today:**
 - **Wave 24** — Factory.ai Missions-inspired HANDOFF schema adopted; bootstrapped `~/Study/claude-handoff` kit (merged `~/.claude/CLAUDE.md` + `/handoff` + `/handoff-init` skills + SessionStart nudge hook). Reconcile diff confirmed the merged CLAUDE.md is a strict superset of the original 9-rule pipeline + Rule 2A scope-tiering + Phase 4.5 DOGFOOD + Rule 9A shape-approval. Post-restart, fully active. (`6b1a21b`)
 - **Wave 25** — `/handoff-init` scaffold installed in apex-engine (PART 3 opt-in). 6 helper scripts + pre-commit hook copied into `scripts/`. **Preserved existing apex post-commit qa hook** by copying it to `scripts/git-hooks/` before flipping `core.hooksPath`. Both hooks now fire under the new hooks path. (`c242a99`)
 - **Wave 26** — canonicalized HANDOFF top heading from `## Now — Wave NN: ...` to `## ⏭️ NOW — <date>` per the kit's `/handoff` skill format (State / Shipped today / Open next steps / Parked); expanded `INDEX.yaml` from 1 → 4 entries (HANDOFF.md, README.md, CLAUDE.md, feedback/README.md); replaced the Wave-24 Convention footer with a slim pointer to the kit. Clears the per-commit "top block isn't dated today" nudge. (`1865b80`)
+- **Wave 27** — `/handoff archive`: moved Wave 7-21 session blocks + the drifted reference sub-sections (Filing-conventions awareness pass / Triage ops trio / Backlog Wave 12c-12d / Pitfalls / Resume-from-clean-state commands / What's in apex-engine today / Engineering decisions / File layout / Commands) into `_archive/HANDOFF-2026-05.md` with an "archived; historical, not authoritative" banner. HANDOFF.md shrank 471 → 74 lines, `##` blocks 28 → 7. `INDEX.yaml` gained a 5th entry for the archive (tier `archived`). Clears the `## blocks live` nudge. (`59f0a66`)
 
 **Open next steps:**
 1. Verify Production-tier on the `gemini-3.5-flash` candidate (GH #35) before bumping `gemini-2.5-flash` in `providers.ts` + `synthesizer-options.ts` + `TRACKED_MODELS` (catalog-check.ts).
 2. Backlog **12c** — disagreement-driven re-fan-out (~120 LOC; needs 2nd-panel UX).
 3. Backlog **12d** — chain-of-verification lite (~150 LOC; claim extract + footnotes).
-4. `/handoff archive` — move Wave 7-22 + the reference sub-sections (Pitfalls / Engineering decisions / File layout / Commands / `## What's in apex-engine today`) into `_archive/HANDOFF-2026-05.md` to clear the `30 ## blocks live` nudge. HANDOFF is "what's in flight," not a knowledge base — those sections belong in `CLAUDE.md` / specs.
-5. **Opt-in (PART 4):** `/handoff-init` in any other repo to spread the HANDOFF + INDEX pattern.
+4. **Opt-in (PART 4):** `/handoff-init` in any other repo to spread the HANDOFF + INDEX pattern.
 
 **Parked:** LFM-side validation of Waves 19 + 20 (no new signal yet — needs the other Mac's CC to surface findings via apex_report).
 
