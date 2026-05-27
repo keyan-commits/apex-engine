@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { __test } from "../web-fetch";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { __test, webFetch } from "../web-fetch";
 
 const { isSafePublicHost, htmlToText, extractTitle } = __test;
 
@@ -175,6 +175,145 @@ describe("htmlToText", () => {
   it("survives malformed entities without throwing", () => {
     const evil = "<p>&#xFFFFFFFF; &#x110000; &#x-1; junk</p>";
     expect(() => htmlToText(evil)).not.toThrow();
+  });
+});
+
+describe("webFetch — Wave 21d H3/H4 integration tests (mocked fetch)", () => {
+  const realFetch = globalThis.fetch;
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+  });
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    vi.useRealTimers();
+  });
+
+  it("(H3) aborts the body stream when response exceeds MAX_BODY_BYTES", async () => {
+    // Create a ReadableStream that streams 5 MB of bytes (over 4 MB cap).
+    const encoder = new TextEncoder();
+    const chunk = encoder.encode("a".repeat(64 * 1024)); // 64KB
+    let emitted = 0;
+    const cap = 4 * 1024 * 1024;
+    const stream = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        if (emitted >= 5 * 1024 * 1024) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(chunk);
+        emitted += chunk.byteLength;
+      },
+    });
+    globalThis.fetch = vi.fn(async () => {
+      return new Response(stream, {
+        status: 200,
+        headers: { "content-type": "text/plain" },
+      });
+    });
+    const r = await webFetch("https://example.com/huge.txt");
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.reason).toMatch(/exceeded|body/i);
+    // Verify the read aborted near (not far past) the cap.
+    expect(emitted).toBeLessThanOrEqual(cap + 128 * 1024);
+  });
+
+  it("(H4) blocks a redirect chain that targets a private IP via Location header", async () => {
+    let call = 0;
+    globalThis.fetch = vi.fn(async (input) => {
+      call++;
+      const url = String(input);
+      if (call === 1 && url === "https://safe.example.com/") {
+        // First hop: 302 → internal host
+        return new Response(null, {
+          status: 302,
+          headers: { Location: "http://10.0.0.5/admin" },
+        });
+      }
+      // Any subsequent call would be the internal fetch — should not
+      // happen.
+      throw new Error("test failure: should not have followed to internal host");
+    });
+    const r = await webFetch("https://safe.example.com/");
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.reason).toMatch(/internal\/private|redirect/i);
+    expect(call).toBe(1);
+  });
+
+  it("(H4) blocks a redirect chain that bounces through a private host before landing public", async () => {
+    // safe.com → 10.0.0.5 → public.com. Should fail on the second hop.
+    let call = 0;
+    globalThis.fetch = vi.fn(async (input) => {
+      call++;
+      const url = String(input);
+      if (call === 1 && url === "https://safe.example.com/") {
+        return new Response(null, {
+          status: 302,
+          headers: { Location: "http://10.0.0.5/" },
+        });
+      }
+      throw new Error("test failure: should have rejected before second fetch");
+    });
+    const r = await webFetch("https://safe.example.com/");
+    expect(r.ok).toBe(false);
+    expect(call).toBe(1);
+  });
+
+  it("(H4) blocks a redirect to javascript: scheme", async () => {
+    globalThis.fetch = vi.fn(async () => {
+      return new Response(null, {
+        status: 302,
+        headers: { Location: "javascript:alert(1)" },
+      });
+    });
+    const r = await webFetch("https://safe.example.com/");
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.reason).toMatch(/unsupported scheme|redirect/i);
+  });
+
+  it("(H4) follows a normal redirect chain to a public host", async () => {
+    let call = 0;
+    globalThis.fetch = vi.fn(async (input) => {
+      call++;
+      const url = String(input);
+      if (call === 1 && url === "https://safe.example.com/old") {
+        return new Response(null, {
+          status: 301,
+          headers: { Location: "https://safe.example.com/new" },
+        });
+      }
+      if (call === 2 && url === "https://safe.example.com/new") {
+        return new Response("<html><body>hi</body></html>", {
+          status: 200,
+          headers: { "content-type": "text/html" },
+        });
+      }
+      throw new Error("unexpected fetch call: " + url);
+    });
+    const r = await webFetch("https://safe.example.com/old");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.finalUrl).toBe("https://safe.example.com/new");
+  });
+
+  it("(H4) caps redirect chain length (rejects redirect loops)", async () => {
+    let call = 0;
+    globalThis.fetch = vi.fn(async (input) => {
+      call++;
+      // Each call redirects to the next /step
+      const url = new URL(String(input));
+      return new Response(null, {
+        status: 302,
+        headers: { Location: `${url.origin}/step${call + 1}` },
+      });
+    });
+    const r = await webFetch("https://safe.example.com/step1");
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.reason).toMatch(/too many redirects/i);
+    expect(call).toBeLessThanOrEqual(11); // MAX_REDIRECTS=10 + 1 initial
   });
 });
 

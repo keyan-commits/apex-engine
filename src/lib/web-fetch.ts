@@ -46,6 +46,19 @@ const ABSOLUTE_MAX_CHARS = 30_000;
 const FETCH_TIMEOUT_MS = 30_000;
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
+// Wave 21d (H3) — hard cap on body bytes streamed. Beyond this the
+// reader is canceled and we treat the response as too large. Real
+// failure pattern: server flushes headers fast then trickles bytes
+// (slowloris-after-headers). The 30s fetch timeout covers headers
+// only — once they arrive the timeout was satisfied. Cap is generous
+// (4 MB) so legitimate pages succeed; HTML→text strip + maxChars
+// truncation handle the per-character output bound separately.
+const MAX_BODY_BYTES = 4 * 1024 * 1024;
+
+// Wave 21d (H4) — max number of redirect hops we'll walk. Each hop is
+// independently SSRF-validated.
+const MAX_REDIRECTS = 10;
+
 const DATA_DIR = join(process.cwd(), "data");
 const DB_PATH = join(DATA_DIR, "apex.db");
 let _cacheDb: Database.Database | null = null;
@@ -230,6 +243,104 @@ export function htmlToText(html: string): string {
   return s;
 }
 
+// Wave 21d (H4) — walk the redirect chain manually, validating each
+// Location target before issuing the next request. Throws on
+// disallowed schemes, internal/private hosts, or redirect-loop
+// exhaustion. Returns BOTH the final response AND the URL we ended
+// up at (mock Response objects in tests have empty res.url; relying
+// on that field is brittle).
+async function fetchWithRedirectGuard(
+  initial: URL,
+  signal: AbortSignal,
+): Promise<{ res: Response; finalUrl: URL }> {
+  let current = initial;
+  for (let i = 0; i <= MAX_REDIRECTS; i++) {
+    if (current.protocol !== "http:" && current.protocol !== "https:") {
+      throw new Error(
+        `redirect chain led to unsupported scheme: ${current.protocol}`,
+      );
+    }
+    if (!isSafePublicHost(current.hostname)) {
+      throw new Error(
+        `redirect chain led to internal/private/loopback host: ${current.hostname}`,
+      );
+    }
+    const res = await fetch(current.toString(), {
+      method: "GET",
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 13.0; rv:121.0) Gecko/20100101 Firefox/121.0",
+        accept: "text/html,application/xhtml+xml,*/*;q=0.8",
+        "accept-language": "en-US,en;q=0.5",
+      },
+      redirect: "manual",
+      signal,
+    });
+    // 3xx with Location → follow the redirect after re-validating.
+    if (res.status >= 300 && res.status < 400) {
+      const location = res.headers.get("location");
+      if (!location) {
+        return { res, finalUrl: current };
+      }
+      let next: URL;
+      try {
+        next = new URL(location, current);
+      } catch {
+        throw new Error(`redirect Location header is not a valid URL: ${location}`);
+      }
+      try {
+        await res.body?.cancel();
+      } catch {
+        // ignore
+      }
+      current = next;
+      continue;
+    }
+    return { res, finalUrl: current };
+  }
+  throw new Error(`too many redirects (>${MAX_REDIRECTS})`);
+}
+
+// Wave 21d (H3) — bounded body read. Streams from res.body's reader,
+// counting bytes; aborts and throws once capBytes is exceeded. Returns
+// the decoded text once the body completes within the cap.
+async function readBodyWithCap(res: Response, capBytes: number): Promise<string> {
+  const reader = res.body?.getReader();
+  if (!reader) return "";
+  const decoder = new TextDecoder();
+  let total = 0;
+  let result = "";
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) {
+        result += decoder.decode();
+        break;
+      }
+      total += value.byteLength;
+      if (total > capBytes) {
+        // Abort the read; tell the server we're done.
+        try {
+          await reader.cancel();
+        } catch {
+          // ignore — caller will throw
+        }
+        throw new Error(
+          `response body exceeded ${capBytes} bytes; aborted to prevent slowloris/OOM`,
+        );
+      }
+      result += decoder.decode(value, { stream: true });
+    }
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      // already released
+    }
+  }
+  return result;
+}
+
 export async function webFetch(
   url: string,
   opts: WebFetchOptions = {},
@@ -271,37 +382,29 @@ export async function webFetch(
     ? AbortSignal.any([opts.signal, timeoutSignal])
     : timeoutSignal;
 
+  // Wave 21d (H4) — manual redirect chain. fetch's native
+  // `redirect: "follow"` only validates the FINAL hop via res.url;
+  // an attacker chain safe → 10.0.0.5/admin → public.com would hit
+  // the internal host before the final URL passes the guard. Walk
+  // the chain ourselves, SSRF-re-checking each Location target.
   let res: Response;
+  let finalUrl: URL = parsed;
   try {
-    res = await fetch(parsed.toString(), {
-      method: "GET",
-      headers: {
-        // Generic UA is the conventional shape for crawler-tolerant
-        // sites. Same as the DDG fetch in web-search.ts.
-        "User-Agent":
-          "Mozilla/5.0 (Macintosh; Intel Mac OS X 13.0; rv:121.0) Gecko/20100101 Firefox/121.0",
-        accept: "text/html,application/xhtml+xml,*/*;q=0.8",
-        "accept-language": "en-US,en;q=0.5",
-      },
-      redirect: "follow",
-      signal,
-    });
+    const r = await fetchWithRedirectGuard(parsed, signal);
+    res = r.res;
+    finalUrl = r.finalUrl;
   } catch (err) {
     return {
       ok: false,
-      reason: `fetch threw: ${err instanceof Error ? err.message : String(err)}`,
+      reason: err instanceof Error ? err.message : String(err),
     };
   }
 
-  // Re-validate the FINAL URL after redirects — a server might 30x to
-  // an internal host. (Node's fetch doesn't expose intermediate hops;
-  // we check res.url which is the final URL.)
-  let finalUrl: URL;
-  try {
-    finalUrl = new URL(res.url);
-  } catch {
-    finalUrl = parsed;
-  }
+  // Defense-in-depth: the final URL is already validated inside
+  // fetchWithRedirectGuard, but re-check here in case fetch followed
+  // an internal redirect that escaped the guard (shouldn't happen
+  // since we use redirect: "manual", but the layered check costs
+  // nothing).
   if (finalUrl.protocol !== "http:" && finalUrl.protocol !== "https:") {
     return { ok: false, reason: `redirected to unsupported scheme: ${finalUrl.protocol}` };
   }
@@ -313,7 +416,7 @@ export async function webFetch(
   }
 
   if (!res.ok) {
-    const body = await res.text().catch(() => "");
+    const body = await readBodyWithCap(res, 1024).catch(() => "");
     return {
       ok: false,
       reason: `HTTP ${res.status} from ${finalUrl.host}: ${body.slice(0, 200)}`,
@@ -323,7 +426,19 @@ export async function webFetch(
   const contentType = res.headers.get("content-type") ?? "application/octet-stream";
   const isHtml = /\b(html|xml)\b/i.test(contentType);
 
-  const raw = await res.text();
+  // Wave 21d (H3) — bounded body read. The 30s fetch timeout covers
+  // headers only; an unbounded res.text() lets a server stream the
+  // body slowly and hold the process indefinitely (slowloris-after-
+  // headers). readBodyWithCap aborts at MAX_BODY_BYTES.
+  let raw: string;
+  try {
+    raw = await readBodyWithCap(res, MAX_BODY_BYTES);
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `body read failed: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
   let title: string | null = null;
   let text: string;
   if (isHtml) {

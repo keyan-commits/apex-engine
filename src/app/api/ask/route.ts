@@ -8,6 +8,7 @@ import {
   fanOut,
   OPENAI_FILTER_FALLBACK_MODEL,
   streamOpenaiContentFilterFallback,
+  type StreamUsage,
 } from "@/lib/engine";
 import { classifyError, userFacingMessage } from "@/lib/errors";
 import {
@@ -16,6 +17,7 @@ import {
   createAckState,
   type AckState,
 } from "@/lib/ack-token-strip";
+import { sanitizeProviderStatusReason } from "@/lib/provider-status-sanitize";
 import { detectFollowUp } from "@/lib/follow-up";
 import {
   noteCacheMiss,
@@ -924,9 +926,22 @@ export async function POST(req: Request) {
                   // AND the grounded-ack event never fires for the slot.
                   const subAckState =
                     ackState[item.provider] ?? createAckState();
-                  for await (const chunk of subStream) {
+                  // Wave 21d (H6) — manually iterate so we capture the
+                  // generator's `usage` return value (final IteratorResult
+                  // .value). `for await (const chunk of subStream)` would
+                  // silently discard `.value` on the `done: true` step,
+                  // dropping the Groq fallback's input/output token
+                  // counts and undercounting cost reporting.
+                  const subIter = subStream[Symbol.asyncIterator]();
+                  let subUsage: StreamUsage | null = null;
+                  while (true) {
+                    const step = await subIter.next();
+                    if (step.done) {
+                      subUsage = step.value ?? null;
+                      break;
+                    }
                     applyAckChunk({
-                      chunk,
+                      chunk: step.value,
                       acc,
                       state: subAckState,
                       provider: item.provider,
@@ -941,6 +956,15 @@ export async function POST(req: Request) {
                     send,
                     ackActive,
                   });
+                  if (subUsage) {
+                    acc.inputTokens = subUsage.inputTokens;
+                    acc.outputTokens = subUsage.outputTokens;
+                    acc.costUsd = estimateCost(
+                      OPENAI_FILTER_FALLBACK_MODEL,
+                      subUsage.inputTokens,
+                      subUsage.outputTokens,
+                    );
+                  }
                   acc.error = null;
                   acc.latencyMs = Date.now() - subStart;
                   acc.model = OPENAI_FILTER_FALLBACK_MODEL;
@@ -1120,22 +1144,56 @@ export async function POST(req: Request) {
           // uses this to attribute substituted answers to the
           // substitute model (not the original) and to mention dropped
           // slots in its Summary when applicable.
+          // Wave 21d (H7) — provider-controlled error text sanitized
+          // before interpolation. Stops a crafted error message
+          // containing `[END PROVIDER STATUS]` or directive-shaped
+          // language from escaping the block boundary into the synth
+          // system prompt.
+          //
+          // Wave 21d (LFM #33a) — also list non-fired slots, not just
+          // errored/substituted ones. A slot that never even attempted
+          // a fan-out (user-disabled, env-gated, never made it into
+          // `items[]`) was previously invisible to the synth. With the
+          // panel "running 2/4" silently being treated as 4-of-4 in
+          // confidence terms, the synth over-claimed.
+          const activeProviderIds = new Set(items.map((it) => it.provider));
           const providerStatusLines: string[] = [];
           for (const p of PROVIDERS) {
             const a = answerMap[p];
             if (a.substituted) {
+              const safeFrom = sanitizeProviderStatusReason(a.substituted.from);
+              const safeReason = sanitizeProviderStatusReason(a.substituted.reason);
               providerStatusLines.push(
-                `- ${p}: SUBSTITUTED — primary model "${a.substituted.from}" was rejected (${a.substituted.reason}); slot was filled by "${a.model}" via a different vendor. Treat this answer as the perspective of ${a.model}, NOT the original model.`,
+                `- ${p}: SUBSTITUTED — primary model "${safeFrom}" was rejected (${safeReason}); slot was filled by "${a.model}" via a different vendor. Treat this answer as the perspective of ${a.model}, NOT the original model.`,
               );
             } else if (a.error && enabled[p] !== false) {
+              const safeMsg = sanitizeProviderStatusReason(a.error);
               providerStatusLines.push(
-                `- ${p}: ERRORED — ${a.error}. This slot's perspective is missing.`,
+                `- ${p}: ERRORED — ${safeMsg}. This slot's perspective is missing.`,
+              );
+            } else if (!activeProviderIds.has(p)) {
+              // Slot did not participate in the fan-out at all. Reasons:
+              // (a) user disabled it in Settings (enabled[p] === false),
+              // (b) env-gated (e.g. deepseek with no DEEPSEEK_API_KEY),
+              // (c) some other reason that filtered it out of `items`.
+              // For (a) and (b) we know the precise cause; otherwise the
+              // catch-all "did not participate" is honest.
+              let reason: string;
+              if (enabled[p] === false) {
+                reason = "user-disabled in Settings";
+              } else if (p === "deepseek" && !process.env.DEEPSEEK_API_KEY) {
+                reason = "env-gated (DEEPSEEK_API_KEY not set)";
+              } else {
+                reason = "did not participate in the fan-out";
+              }
+              providerStatusLines.push(
+                `- ${p}: NOT RUN — ${reason}. This slot's perspective is missing; do NOT treat the panel as full.`,
               );
             }
           }
           const providerStatusBlock =
             providerStatusLines.length > 0
-              ? `[PROVIDER STATUS]\n${providerStatusLines.join("\n")}\n[END PROVIDER STATUS]\n\nIMPORTANT: When attributing answers in your synthesis, use the ACTUAL model that responded (per [PROVIDER STATUS] above), not the slot's primary model. Mention any errored / substituted slots in the Summary.\n\n`
+              ? `[PROVIDER STATUS]\n${providerStatusLines.join("\n")}\n[END PROVIDER STATUS]\n\nIMPORTANT: When attributing answers in your synthesis, use the ACTUAL model that responded (per [PROVIDER STATUS] above), not the slot's primary model. Mention any errored / substituted / not-run slots in the Summary; the panel's effective size is fewer than 5 when slots are missing.\n\n`
               : "";
           const synthSystemPromptWithStatus = providerStatusBlock + (synthSystemPrompt ?? "");
           send({ type: "synth-open" });

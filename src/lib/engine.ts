@@ -431,11 +431,21 @@ export function streamOpenaiContentFilterFallback(
   systemPrompt: string,
   signal: AbortSignal,
 ): AsyncGenerator<string, StreamUsage | null, undefined> {
+  // Wave 21d (H5) — wrap the Groq call with the same timeout-combined
+  // signal pattern as primary streams. Without it, a hung Groq would
+  // wait on only the request signal — i.e. forever unless the user
+  // manually aborts. The DEFAULT_PROVIDER_TIMEOUT_MS (90s) is more
+  // than enough for openai/gpt-oss-120b on Groq's free tier; we use
+  // it explicitly rather than per-provider overrides because the
+  // "openai slot via Groq" case isn't naturally one of the providers
+  // in PROVIDER_TIMEOUT_OVERRIDE_MS.
+  const timeoutSignal = AbortSignal.timeout(DEFAULT_PROVIDER_TIMEOUT_MS);
+  const combined = AbortSignal.any([signal, timeoutSignal]);
   return streamGroqText(
     OPENAI_FILTER_FALLBACK_MODEL,
     prompt,
     systemPrompt,
-    signal,
+    combined,
   );
 }
 
