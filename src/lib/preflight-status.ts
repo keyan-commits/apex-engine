@@ -77,14 +77,19 @@ export function buildPreflightStatus(opts: {
 
     const state = quotaStates.get(provider);
     if (state && !state.primaryAvailable) {
-      // Quota-exhausted. Gemini specifically has the Wave 22a cross-
-      // provider substitute path in route.ts; here at the MCP fanout
-      // level the substitute path doesn't fire (the MCP fanout is a
-      // direct call into engine.ts which marks exhaustion on 429),
-      // so the slot DOES drop. Flag explicitly.
-      const note = provider === "gemini"
-        ? "quota-exhausted (resets at UTC midnight)"
-        : "quota-exhausted (resets in <60min)";
+      // Quota-exhausted. Wave 22a (web UI) + Wave 22f (MCP) substitute
+      // Gemini quota-exhaust via llama-3.1-8b-instant on Groq when
+      // APEX_GEMINI_QUOTA_FALLBACK isn't "skip". For other providers
+      // (no substitute path today) the slot does drop.
+      let note: string;
+      if (provider === "gemini") {
+        const willSubstitute = process.env.APEX_GEMINI_QUOTA_FALLBACK !== "skip";
+        note = willSubstitute
+          ? "quota-exhausted (resets at UTC midnight) — will attempt substitute via llama-3.1-8b-instant on Groq (Wave 22a/f)"
+          : "quota-exhausted (resets at UTC midnight) — substitute disabled via APEX_GEMINI_QUOTA_FALLBACK=skip";
+      } else {
+        note = "quota-exhausted (resets in <60min)";
+      }
       entries.push({ provider, willRun: false, reason: note });
       continue;
     }

@@ -128,7 +128,7 @@ export function sanitizeContextBlock(raw: string | undefined): string | null {
     : cleaned;
 }
 
-function composeWithContext(base: string, contextBlock: string | null): string {
+export function composeWithContext(base: string, contextBlock: string | null): string {
   if (!contextBlock) return base;
   // Frame the context as a labeled block at the TOP of the system
   // prompt so providers know it's caller-supplied disambiguation, not

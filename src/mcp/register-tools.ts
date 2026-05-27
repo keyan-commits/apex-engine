@@ -1,7 +1,17 @@
 import { spawnSync } from "node:child_process";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { fanOut, type FanOutItem } from "@/lib/engine";
+import {
+  composeWithContext,
+  DEFAULT_PROVIDER_TIMEOUT_MS,
+  DEFAULT_SYSTEM_PROMPT,
+  fanOut,
+  GEMINI_QUOTA_FALLBACK_MODEL,
+  sanitizeContextBlock as sanitizeFanoutContextBlock,
+  streamGeminiQuotaFallback,
+  type FanOutItem,
+} from "@/lib/engine";
+import { classifyError } from "@/lib/errors";
 import { createReport } from "@/lib/feedback";
 import { formatFlushNotice } from "@/lib/feedback-flush";
 import { listHistory, saveHistory, type HistoryAnswer, type HistoryEntry } from "@/lib/history";
@@ -452,6 +462,11 @@ type CollectedAnswer = {
   model: string;
   text: string;
   error: string | null;
+  // Wave 22f — when set, this slot was filled by a cross-provider
+  // substitute after the primary failed (today only Gemini → Groq
+  // llama-3.1-8b-instant on quota-exhaust). `from` is the original
+  // model id; `reason` is the original provider's user-facing error.
+  substituted?: { from: string; reason: string };
 };
 
 async function collectStream(item: FanOutItem): Promise<CollectedAnswer> {
@@ -468,6 +483,72 @@ async function collectStream(item: FanOutItem): Promise<CollectedAnswer> {
     model: item.model,
     text,
     error,
+  };
+}
+
+// Wave 22f — MCP-side Gemini quota substitute. The web UI's SSE
+// fan-out (src/app/api/ask/route.ts) already substitutes Gemini
+// quota-exhaust to llama-3.1-8b-instant on Groq (Wave 22a), but
+// runFanOut here drives the MCP-side `apex_fanout` / `apex_synthesize`
+// path — LFM's actual usage pattern per #34 — which previously
+// dropped Gemini silently on quota-exhaust. This post-hoc pass
+// matches the symptoms (provider=="gemini", classified as
+// "gemini-quota-exhausted", no text accumulated) and replaces the
+// slot with the substitute response. Env-gated via the same
+// APEX_GEMINI_QUOTA_FALLBACK as the web side; default "substitute".
+//
+// Implementation note: this fires AFTER the primary fan-out has
+// completed (post-hoc) rather than racing concurrently with it.
+// The cost is one extra ~2s round-trip when the substitute fires;
+// the benefit is no plumbing changes to fanOut() / collectStream()
+// / FanOutItem. Acceptable trade-off — substitute fires on a small
+// fraction of calls (only Gemini-specific quota exhaustion).
+async function maybeSubstituteGeminiQuota(
+  answer: CollectedAnswer,
+  composedSystemPrompt: string,
+  prompt: string,
+): Promise<CollectedAnswer> {
+  if (process.env.APEX_GEMINI_QUOTA_FALLBACK === "skip") return answer;
+  if (answer.provider !== "gemini") return answer;
+  if (!answer.error) return answer;
+  if (answer.text.trim().length > 0) return answer;
+  const classified = classifyError(new Error(answer.error));
+  if (classified.kind !== "gemini-quota-exhausted") return answer;
+
+  const signal = AbortSignal.timeout(DEFAULT_PROVIDER_TIMEOUT_MS);
+  let subText = "";
+  let subError: string | null = null;
+  try {
+    const stream = streamGeminiQuotaFallback(prompt, composedSystemPrompt, signal);
+    const iter = stream[Symbol.asyncIterator]();
+    while (true) {
+      const step = await iter.next();
+      if (step.done) break;
+      subText += step.value;
+    }
+  } catch (err) {
+    subError = err instanceof Error ? err.message : String(err);
+  }
+
+  if (subError || subText.trim().length === 0) {
+    // Substitute itself failed. Surface the secondary failure
+    // alongside the primary so the caller knows BOTH paths broke.
+    return {
+      ...answer,
+      error: `Gemini quota + substitute failed: ${subError ?? "empty substitute response"} (primary: ${answer.error})`,
+    };
+  }
+
+  return {
+    provider: "gemini",
+    tier: "fallback",
+    model: GEMINI_QUOTA_FALLBACK_MODEL,
+    text: subText,
+    error: null,
+    substituted: {
+      from: answer.model,
+      reason: classified.message,
+    },
   };
 }
 
@@ -491,7 +572,21 @@ async function runFanOut(
   const filtered = opts.includeClaude
     ? items
     : items.filter((i) => i.provider !== "claude");
-  return Promise.all(filtered.map(collectStream));
+  const collected = await Promise.all(filtered.map(collectStream));
+
+  // Wave 22f — recompute the system prompt fanOut would have used
+  // for Gemini (DEFAULT_SYSTEM_PROMPT + sanitized context) so the
+  // substitute call gets the same framing. Per-provider system
+  // prompt overrides (used by the review tools) don't reach here —
+  // the review tools call runFanOut with `systemPromptByProvider`,
+  // but those panels exclude Gemini-specific overrides today; the
+  // substitute uses the same default+context shape as a fallback.
+  const sanitizedContext = sanitizeFanoutContextBlock(opts.context);
+  const composedSystem = composeWithContext(DEFAULT_SYSTEM_PROMPT, sanitizedContext);
+
+  return Promise.all(
+    collected.map((a) => maybeSubstituteGeminiQuota(a, composedSystem, prompt)),
+  );
 }
 
 function formatAnswers(answers: CollectedAnswer[]): string {
@@ -499,6 +594,14 @@ function formatAnswers(answers: CollectedAnswer[]): string {
     .map((a) => {
       const label = PROVIDER_LABELS[a.provider] ?? a.provider;
       const tierNote = a.tier === "fallback" ? `, ${a.tier}` : "";
+      // Wave 22f — when a slot was filled by the post-hoc substitute,
+      // surface the from/to model swap + the original failure reason
+      // up front so the reader knows the answer came from a different
+      // provider than the slot label implies.
+      if (a.substituted) {
+        const header = `## ${label} — ${a.model} (substituted, was ${a.substituted.from})`;
+        return `${header}\n\n_Original ${label.toLowerCase()} call failed: ${a.substituted.reason}. Filled by cross-provider substitute (Wave 22a/f)._\n\n${a.text.trim()}`;
+      }
       const header = `## ${label} — ${a.model}${tierNote}`;
       if (a.error) return `${header}\n\n_Error: ${a.error}_`;
       return `${header}\n\n${a.text.trim()}`;
