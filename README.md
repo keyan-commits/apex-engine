@@ -11,8 +11,8 @@ prompt → [optional ensemble of roles] → fan-out (parallel) → 4 answers →
 ## Features
 
 ### Intelligence
-- **Fan-out:** Claude (Claude Agent SDK), GPT (GitHub Models), Llama (Groq), Gemini (AI Studio) streamed in parallel.
-- **Synthesizer:** combines all four answers into one consolidated reply. GPT-OSS 120B (Groq) by default; switchable in Settings.
+- **Fan-out:** Claude (Claude Agent SDK), GPT (GitHub Models), Llama (Groq), Gemini (AI Studio), DeepSeek (direct API) streamed in parallel. DeepSeek auto-disables when `DEEPSEEK_API_KEY` isn't set.
+- **Synthesizer:** combines all valid fan-out answers into one consolidated reply. GPT-OSS 120B (Groq) by default; switchable in Settings.
 - **Mixture-of-Roles:** 20 roles × 9 named ensembles (None / Code Review / Research / Decision / Brainstorm / Legal / Medical / Marketing / Decompose). Each role's instructions are appended to one model's system prompt; the synthesizer is role-aware and labels each contribution.
 - **Sub-agents (Decompose ensemble):** a planner (gpt-oss-120b with JSON schema) splits the question into ≤3 sub-questions in a depth-≤2 DAG. Each sub-question runs a mini fan-out (gpt-4o-mini + Llama, then mini-synth). A final synthesizer combines the tree.
 - **Synthesizer styles:** default / terse / detailed / bulleted / essay.
@@ -66,7 +66,7 @@ prompt → [optional ensemble of roles] → fan-out (parallel) → 4 answers →
 - **SQLite (FTS5)** via `better-sqlite3`
 - **react-syntax-highlighter** (Prism)
 - **unpdf** for PDF text extraction
-- **Vitest** — 28 test files, 234 tests; post-commit hook auto-sweeps stale `[auto-qa]`/`[auto-security]` GitHub issues on every passing gate run
+- **Vitest** — 45 test files, 500+ tests (current counts live in `src/lib/__tests__/`). Post-commit hook auto-sweeps stale `[auto-qa]`/`[auto-security]` GitHub issues on every passing gate run (a "gate run" = `pnpm qa:check` or `pnpm security:check` finishing clean).
 - **pnpm** via Node corepack
 
 ## Setup
@@ -85,7 +85,7 @@ pnpm dev
 
 ### MCP setup — read this if you use Claude Code or Claude Desktop
 
-apex-engine ships an MCP server (14 tools: apex_fanout / apex_synthesize / apex_decompose / apex_report / apex_self_check / apex_qa_review / apex_self_security_check / apex_code_review / apex_security_review / apex_history_search / apex_web_search / apex_web_fetch / apex_bootstrap_project / apex_query_source). **Every apex-engine user should run the setup once.**
+apex-engine ships an MCP server (**16 tools** — the canonical list lives in `src/mcp/register-tools.ts:REGISTERED_TOOL_NAMES`; current registrations include apex_fanout / apex_synthesize / apex_decompose / apex_report / apex_self_check / apex_qa_review / apex_self_security_check / apex_code_review / apex_security_review / apex_history_search / apex_web_search / apex_web_fetch / apex_bootstrap_project / apex_query_source / apex_read_source / apex_doc_review). **Every apex-engine user should run the setup once.**
 
 For downstream projects that use apex-engine MCP, the first apex_code_review / apex_security_review call surfaces a 💡 nudge telling the calling CC session to run `apex_bootstrap_project({ projectRoot: "<absolute-path>" })`. That writes 6 template MDs to `<projectRoot>/.apex/` (a project frame + 5 per-persona addenda). The calling CC session then opens each template, fills in the placeholders based on its project knowledge, and re-runs review tools with `projectRoot` set — getting project-grounded maker-checker review without manual setup instructions.
 
@@ -99,7 +99,7 @@ pnpm setup:background   # detaches; pid in data/.mcp-http.pid
 
 That's it. The script (1) registers `apex-engine` with `claude mcp add --transport http`, (2) starts the long-lived HTTP server with `tsx watch`. After this, **code changes hot-reload automatically — no more Claude Code restarts**.
 
-Verify from any CC session by calling `apex_self_check`. Should report 7 tools loaded.
+Verify from any Claude Code (CC) session by calling `apex_self_check`. Should report 16 tools loaded (per the registry — `apex_self_check`'s output also names them).
 
 <details>
 <summary>Manual setup (if you prefer)</summary>
@@ -171,12 +171,29 @@ Edit `src/lib/roles.ts` to add or change roles/ensembles.
 
 Apex ships as an MCP server. Claude Code, Claude Desktop, or any MCP client can invoke it as a tool.
 
-**Tools:**
+**Tools (16 — see `src/mcp/register-tools.ts:REGISTERED_TOOL_NAMES` for the canonical list):**
+
+Headline:
 
 - `apex_fanout({ prompt, includeClaude?, ensembleId? })` — parallel queries; optional role ensemble.
 - `apex_synthesize({ prompt, includeClaude?, synthesizerId? })` — fan-out plus a synthesized "best answer".
 - `apex_decompose({ prompt })` — sub-agent decomposition (planner + mini fan-outs + briefing).
 - `apex_report({ kind, title, description, promptSnippet?, errorText? })` — file a bug or improvement against apex-engine from any Claude Code session. See [feedback channel](#cross-instance-feedback) below.
+
+Grounded maker-checker reviewers (Wave 18/19/22, project-context-aware):
+
+- `apex_code_review({ projectRoot, filePath, evidence? })` — 5-persona code review (consistency-preserving synth, drops findings without quoted evidence).
+- `apex_security_review({ projectRoot, filePath, evidence? })` — same panel, security charter.
+- `apex_doc_review({ files | filePaths, projectRoot })` — prose maker-checker (5 prose-native slots; Misleading/Confusing/Polish severity).
+- `apex_read_source({ projectRoot, mode, path, maxDepth? })` — read file / list / tree of a target project's working tree (path-traversal safe, denylist-guarded).
+
+Infra / utility:
+
+- `apex_self_check` — confirms server commit + loaded tools (drift detector).
+- `apex_qa_review` / `apex_self_security_check` — run apex's own qa:check / security:check on demand.
+- `apex_history_search`, `apex_web_search`, `apex_web_fetch` — apex's history FTS + Brave search + URL fetch with SSRF guards.
+- `apex_bootstrap_project({ projectRoot })` — scaffold the `.apex/` convention (context.md + per-persona addenda + sources.json).
+- `apex_query_source({ projectRoot, sourceId, query })` — readonly query against a declared SQLite/CSV data source.
 
 **Quickest path: see [MCP setup](#mcp-setup--read-this-if-you-use-claude-code-or-claude-desktop) above and run `pnpm setup`.** That handles everything.
 
@@ -259,7 +276,7 @@ Auto-reports fire from inside apex-engine's own code paths:
 | UI components | `src/components/` |
 | Tests | `src/lib/__tests__/` |
 
-See `CLAUDE.MD` for project conventions and `HANDOFF.md` for current session state.
+See `CLAUDE.md` for project conventions and `HANDOFF.md` for current session state.
 
 ## License
 

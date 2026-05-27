@@ -8,7 +8,7 @@ No OpenRouter or third-party aggregators. We call foundational provider APIs dir
 
 Per query, produce:
 
-1. Up to four individual answers (Claude, GPT, Llama, Gemini) streamed side-by-side.
+1. Up to five individual answers (Claude, GPT, Llama, Gemini, DeepSeek) streamed side-by-side.
 2. One synthesized "best answer" combining them — GPT-OSS 120B (Groq) by default, switchable in Settings.
 
 …with cheap heuristic routing in front: trivial queries collapse to a single Llama call; vague queries trigger a user-gated rewriter pass; the synth surfaces a "Notable Disagreements" callout when models materially diverge.
@@ -20,8 +20,8 @@ Per query, produce:
 - **LLM SDKs:**
   - `@anthropic-ai/claude-agent-sdk` — Claude (uses Claude Code OAuth, no API key)
   - `ai` (Vercel AI SDK v6) + `@ai-sdk/openai-compatible` + `@ai-sdk/google` + `@ai-sdk/groq`
-- **MCP:** `@modelcontextprotocol/sdk` 1.x · seven tools (apex_fanout, apex_synthesize, apex_decompose, apex_report, apex_self_check, apex_qa_review, apex_security_review). Two transports — HTTP (recommended; hot-reload via `tsx watch`) and stdio (legacy)
-- **Quality-aware routing (Wave 11):** static `QUALITY_SCORE` per provider (claude=4 > openai=3 > llama=2 = gemini=2). When 2+ non-Claude providers are quota-exhausted, the synth auto-upgrades to `claude-sonnet-4-6` (using the user's Claude Code subscription) — unless Eco mode is on or the user opts out via the Settings toggle. Skip-synth-on-N≤1 prevents wasteful pass-through synth calls.
+- **MCP:** `@modelcontextprotocol/sdk` 1.x · **16 tools** (see `src/mcp/register-tools.ts` `REGISTERED_TOOL_NAMES` for the canonical list — fanout/synthesize/decompose, report/self_check, qa/security reviewers, code/security maker-checker panels, history_search, web_search/web_fetch, bootstrap_project, query_source, read_source, doc_review). Two transports — HTTP (recommended; hot-reload via `tsx watch`) and stdio (legacy)
+- **Quality-aware routing (Wave 11):** static `QUALITY_SCORE` per provider (claude=4 > openai=3 = deepseek=3 > llama=2 = gemini=2). When 2+ non-Claude providers are quota-exhausted, the synth auto-upgrades to `claude-sonnet-4-6` (using the user's Claude Code subscription) — unless Eco mode is on or the user opts out via the Settings toggle. Skip-synth-on-N≤1 prevents wasteful pass-through synth calls.
 - **Confidence + Self-Refine (Wave 12):** synth prompt asks for a `## Confidence` 0-100 score; UI surfaces a badge + low-confidence callout. Optional Self-Refine toggle adds a critique→revise pass on the synth (~2× latency, ~3× tokens, opt-in)
 - **State:** SQLite via `better-sqlite3` (history with FTS5, quota tracker, response cache, telemetry, attachment store)
 - **Markdown:** `react-markdown` + `react-syntax-highlighter` (Prism oneDark)
@@ -47,7 +47,8 @@ classify (sync — regex/length/keyword)        [src/lib/classify.ts]
         ├── Claude (Agent SDK)
         ├── GPT-4o-mini (GitHub Models)
         ├── Llama 3.3 70B (Groq)
-        └── Gemini 2.5 Flash (AI Studio)
+        ├── Gemini 2.5 Flash (AI Studio)
+        └── DeepSeek-Chat (DeepSeek direct API; auto-disabled when DEEPSEEK_API_KEY is unset)
               │
               ▼
         synthesize (gpt-oss-120b default, Claude Sonnet / others switchable)
@@ -97,7 +98,7 @@ apex-engine/
 │   └── mcp/
 │       ├── server.ts                        (stdio entrypoint — minimal)
 │       ├── http-server.ts                   (HTTP entrypoint — Streamable HTTP, dual-stack 127.0.0.1+::1)
-│       └── register-tools.ts                (shared tool registry: apex_fanout, apex_synthesize, apex_decompose, apex_report, apex_self_check, apex_qa_review, apex_security_review)
+│       └── register-tools.ts                (shared tool registry — 16 tools; `REGISTERED_TOOL_NAMES` is the canonical export)
 ├── data/                                    (gitignored — apex.db + feedback/outbox + feedback/sent)
 ├── HANDOFF.md                                (volatile — current state, last action, next steps)
 ├── README.md                                 (public-facing)
