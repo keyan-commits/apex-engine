@@ -49,6 +49,21 @@ import {
   readSourceFile,
   treeSourceDir,
 } from "@/lib/apex-read-source";
+import {
+  buildDocReviewPanel,
+  DOC_REVIEW_PANEL_ASSIGNMENTS,
+} from "@/lib/doc-review-personas";
+import {
+  buildDocReviewPrompt,
+  DOC_REVIEW_PROMPT_CONSTANTS,
+  DOC_REVIEW_SYNTH_SYSTEM_PROMPT,
+  type DocFile,
+} from "@/lib/doc-review-prompt";
+import {
+  extractRefs,
+  formatResolutionReport,
+  resolveRefs,
+} from "@/lib/doc-review-resolver";
 
 // Shared MCP tool registration — called by BOTH the stdio entry point
 // (src/mcp/server.ts) and the HTTP entry point (src/mcp/http-server.ts).
@@ -74,6 +89,7 @@ export const REGISTERED_TOOL_NAMES = [
   "apex_query_source",
   "apex_web_fetch",
   "apex_read_source",
+  "apex_doc_review",
 ];
 
 const CODE_REVIEW_MAX_CHARS = 8_000;
@@ -1523,6 +1539,178 @@ export function registerAllTools(server: McpServer): void {
         : `apex_read_source (${mode}) failed: ${result.reason}`;
       return {
         content: [{ type: "text", text: withFlushNotice(text) }],
+      };
+    },
+  );
+
+  server.tool(
+    "apex_doc_review",
+    `**Project-agnostic Mixture-of-Agents prose maker-checker review.** Wave 22c — LFM #32. The prose analogue of \`apex_code_review\`: 5 personas, each owning ONE distinct failure mode, reviewing documentation (Markdown / RST / plain prose) for issues that code review doesn't catch.\n\n**Panel assignments (different from code-review):**\n- claude → **consistency** (contradictions across the doc)\n- openai → **freshness** (stale paths, version refs, outdated examples)\n- llama → **cross-refs** (broken navigation, dangling anchors)\n- gemini → **clarity** (ambiguity, vague pronouns, undefined acronyms)\n- deepseek → **rationale** (assertions without "why")\n\n**Severity scale is doc-native, NOT code-review's P0-P3:**\n- **Misleading** — reader will form an incorrect mental model\n- **Confusing** — reader will be uncertain and have to guess\n- **Polish** — cosmetic; reader can still get the right idea\n\nRoll-up: **Trustworthy / Patchy / Untrustworthy** (Doc Health rating).\n\n**Inputs:** Pass either \`files: DocFile[]\` (caller supplies path + body, up to ${DOC_REVIEW_PROMPT_CONSTANTS.MAX_DOC_FILES} files) OR \`filePaths: string[]\` + \`projectRoot\` (apex reads the files from disk via the same path-traversal-safe loader as apex_code_review). Multi-file mode is the whole point: contradictions across README.md / ARCHITECTURE.md / HANDOFF.md are exactly the failure mode this tool is built to catch.\n\n**Resolution Report:** When \`projectRoot\` is supplied, apex extracts every \`path/to/file[:symbol]\` reference from the doc body and pre-resolves each one (filesystem check + symbol grep). The result is prepended to the panel's prompt so the \`freshness\` reviewer can cite hard evidence (\`engine.ts:streamMultimodal → NOT FOUND\`) instead of hallucinating "looks fresh" judgments.\n\nUse this for: design docs / RFCs before merging, README + HANDOFF cluster audits before a release, architectural docs that have drifted from the code.`,
+    {
+      files: z
+        .array(
+          z.object({
+            path: z.string().min(1).describe("Display path (e.g. 'README.md'). Used in finding citations like 'README.md:§Stack'."),
+            body: z.string().min(1).describe("File body. Cap: 16,000 chars per file; longer files are truncated with a marker."),
+          }),
+        )
+        .max(DOC_REVIEW_PROMPT_CONSTANTS.MAX_DOC_FILES)
+        .optional()
+        .describe(
+          `Up to ${DOC_REVIEW_PROMPT_CONSTANTS.MAX_DOC_FILES} files supplied directly by the caller. Mutually exclusive with \`filePaths\` (one must be set). Use this when the doc isn't yet committed to disk, or when the caller already has the content in memory.`,
+        ),
+      filePaths: z
+        .array(z.string().min(1))
+        .max(DOC_REVIEW_PROMPT_CONSTANTS.MAX_DOC_FILES)
+        .optional()
+        .describe(
+          `Relative paths under \`projectRoot\` (e.g. ["README.md", "HANDOFF.md"]). Apex reads each file using the same path-traversal-safe loader as apex_code_review. Requires \`projectRoot\`. Mutually exclusive with \`files\`.`,
+        ),
+      focus: z
+        .string()
+        .optional()
+        .describe(
+          "Optional free-text guidance. Examples: 'audit version refs in HANDOFF.md', 'check contradictions between README's Stack section and ARCHITECTURE.md', 'review for outdated Groq model IDs'.",
+        ),
+      context: z
+        .string()
+        .optional()
+        .describe(
+          "Ephemeral per-call context. Same trust tier as apex_code_review's `context` — directive-shaped lines are stripped, capped at 2000 chars. Use durable project context via `.apex/context.md` instead when possible.",
+        ),
+      projectRoot: projectRootArg,
+      includeClaude: z
+        .boolean()
+        .default(true)
+        .describe(
+          "Include Claude in the panel. Default: true. Claude owns the `consistency` slot in the default assignment — disabling it drops the contradiction-detection lens.",
+        ),
+    },
+    async ({ files, filePaths, focus, context, projectRoot, includeClaude }) => {
+      // Resolve files: either caller-supplied or read from disk.
+      const collectedFiles: DocFile[] = [];
+      if (files && files.length > 0) {
+        for (const f of files) {
+          collectedFiles.push({ path: f.path, body: f.body });
+        }
+      } else if (filePaths && filePaths.length > 0) {
+        if (!projectRoot) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: withFlushNotice(
+                  "apex_doc_review: `filePaths` requires `projectRoot`. Pass projectRoot or use `files` directly.",
+                ),
+              },
+            ],
+          };
+        }
+        for (const fp of filePaths) {
+          const loaded = loadReviewFile(projectRoot, fp);
+          if (!loaded.ok) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: withFlushNotice(`apex_doc_review: could not load ${fp}: ${loaded.reason}`),
+                },
+              ],
+            };
+          }
+          collectedFiles.push({ path: loaded.relativePath, body: loaded.content });
+        }
+      } else {
+        return {
+          content: [
+            {
+              type: "text",
+              text: withFlushNotice(
+                "apex_doc_review: provide either `files` (path+body) or `filePaths` (with projectRoot).",
+              ),
+            },
+          ],
+        };
+      }
+
+      // Resolution Report: pre-resolve file/symbol refs across all
+      // collected files. Only meaningful if projectRoot is set; without
+      // a root we have no filesystem to check against.
+      let resolutionReport: string | undefined;
+      if (projectRoot) {
+        const allRefs: string[] = [];
+        const seen = new Set<string>();
+        for (const f of collectedFiles) {
+          for (const r of extractRefs(f.body)) {
+            if (!seen.has(r)) {
+              seen.add(r);
+              allRefs.push(r);
+            }
+          }
+        }
+        if (allRefs.length > 0) {
+          const report = resolveRefs(projectRoot, allRefs);
+          resolutionReport = formatResolutionReport(report);
+        }
+      }
+
+      const nonce = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
+      const reviewPrompt = buildDocReviewPrompt({
+        files: collectedFiles,
+        nonce,
+        ...(focus ? { focus } : {}),
+        ...(resolutionReport ? { resolutionReport } : {}),
+      });
+
+      const sanitizedCaller = sanitizeContextBlock(context);
+      const panel = buildDocReviewPanel({}, sanitizedCaller);
+
+      const answers = await runFanOut(reviewPrompt, {
+        includeClaude,
+        systemPromptByProvider: panel,
+      });
+      const synthInput: FanOutAnswer[] = answers.map((a) => ({
+        provider: a.provider,
+        text: a.text,
+        error: a.error ?? undefined,
+      }));
+
+      const panelStatus = buildPanelStatus(answers, includeClaude);
+      const panelStatusBlock = formatPanelStatusBlock(panelStatus);
+      const personaLegend = Object.entries(DOC_REVIEW_PANEL_ASSIGNMENTS)
+        .map(([provider, slot]) => `- ${provider} → ${slot}`)
+        .join("\n");
+      const synthSystemPrompt = [
+        sanitizedCaller
+          ? `[Context from calling session]\n${sanitizedCaller}\n[End context]`
+          : "",
+        `[PERSONA PANEL ASSIGNMENTS]\n${personaLegend}\n[END PERSONA PANEL ASSIGNMENTS]`,
+        panelStatusBlock,
+        DOC_REVIEW_SYNTH_SYSTEM_PROMPT,
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+
+      let synthText = "";
+      let synthError: string | null = null;
+      try {
+        const panelSynthId = resolvePanelSynthesizerId(includeClaude);
+        for await (const chunk of synthesize(reviewPrompt, synthInput, {
+          systemPrompt: synthSystemPrompt,
+          synthesizerId: panelSynthId,
+        })) {
+          synthText += chunk;
+        }
+      } catch (err) {
+        synthError = err instanceof Error ? err.message : String(err);
+      }
+
+      const synthSection = synthError
+        ? `# Doc Review (synth failed)\n\n_Error: ${synthError}_`
+        : `${synthText.trim()}`;
+      const body = `${synthSection}\n\n---\n\n# Individual Reviewer Responses\n\n${formatAnswers(answers)}`;
+      return {
+        content: [{ type: "text", text: withFlushNotice(body) }],
       };
     },
   );
