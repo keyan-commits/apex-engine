@@ -24,7 +24,7 @@
 - `python3 scripts/generate_index_md.py` → `INDEX.md regenerated.`
 - `python3 scripts/validate_index.py` → `✓ INDEX.yaml OK — 1 entries`
 - `git config core.hooksPath scripts/git-hooks` → exit 0
-- `git commit` → `(SHA-pending)` · `git push` → `(SHA-pending)`
+- `git commit` → `c242a99` · `git push` → exit 0
 
 **Issues discovered (out of scope):** (none — clean scaffold install)
 
