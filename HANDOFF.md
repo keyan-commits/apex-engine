@@ -20,7 +20,7 @@
 - `cd ~/Study/claude-handoff && ./bootstrap.sh` → exit 0
 - `diff ~/.claude/.handoff-backup-*/CLAUDE.md ~/.claude/CLAUDE.md` → expected restructure; semantic-superset spot-check passed (Rule 4 plan-format headings, 4 investigation subagents, 5 shorthand overrides, Agent Team Config all present in merged)
 - `git pull --ff-only` → already up to date
-- `git commit` → `(SHA-pending)` · `git push` → `(SHA-pending)`
+- `git commit` → `6b1a21b` · `git push` → exit 0
 
 **Issues discovered (out of scope):** (none)
 
