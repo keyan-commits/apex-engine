@@ -29,7 +29,8 @@
     "feedback:cleanup": "tsx scripts/feedback-cleanup.ts",
     "qa:check": "tsx scripts/qa-check.ts",
     "qa:install-hooks": "tsx scripts/qa-install-hooks.ts",
-    "security:check": "tsx scripts/security-check.ts"
+    "security:check": "tsx scripts/security-check.ts",
+    "catalog:check": "tsx scripts/catalog-check.ts"
   },
   "dependencies": {
     "@ai-sdk/deepseek": "^2.0.35",
