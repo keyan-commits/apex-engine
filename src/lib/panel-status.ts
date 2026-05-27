@@ -12,6 +12,7 @@
 // status reporting, the synth silently produced a confident verdict
 // from context-blind models. The status block makes the gap loud.
 
+import { classifyError, type ErrorKind } from "./errors";
 import { REVIEW_PANEL_ASSIGNMENTS } from "./personas";
 import type { PersonaSlot } from "./project-context";
 import type { Provider } from "./providers";
@@ -21,6 +22,12 @@ export type PanelStatusEntry = {
   provider: Provider;
   ok: boolean;
   reason?: string;
+  // Wave 22d (#22 ask) — classified kind for the error so callers
+  // can distinguish "timeout" vs "rate-limited" vs "quota-exhausted"
+  // in the formatted output. LFM: "a per-slot soft-timeout note in
+  // the output (vs a bare 'operation aborted') would make it clearer
+  // the panel ran 4/5".
+  errorKind?: ErrorKind | "missing" | "empty";
 };
 
 type AnswerLike = {
@@ -48,18 +55,30 @@ export function buildPanelStatus(
         provider,
         ok: false,
         reason: "provider not in fan-out (likely disabled or env-gated)",
+        errorKind: "missing",
       });
       continue;
     }
     const hasText = (a.text ?? "").trim().length > 0;
     if (a.error) {
-      out.push({ slot, provider, ok: false, reason: a.error });
+      // Wave 22d — classify the error so the formatter can emit
+      // "(timeout)" / "(rate-limited)" / "(quota-exhausted)" instead
+      // of leaving the raw message as the only signal.
+      const classified = classifyError(new Error(a.error));
+      out.push({
+        slot,
+        provider,
+        ok: false,
+        reason: a.error,
+        errorKind: classified.kind,
+      });
     } else if (!hasText) {
       out.push({
         slot,
         provider,
         ok: false,
         reason: "empty response (possible timeout pre-stream)",
+        errorKind: "empty",
       });
     } else {
       out.push({ slot, provider, ok: true });
@@ -68,13 +87,69 @@ export function buildPanelStatus(
   return out;
 }
 
+// Wave 22d — short human-readable label for the entry's failure
+// state, used by the formatter and by tests. Pulled out so we can
+// unit-test the classification → label mapping without going through
+// formatPanelStatusBlock's full output string.
+export function panelStatusEntryLabel(entry: PanelStatusEntry): string {
+  if (entry.ok) return "ok";
+  switch (entry.errorKind) {
+    case "timeout":
+      return "timed out";
+    case "rate-limited":
+      return "rate-limited";
+    case "gemini-quota-exhausted":
+      return "quota-exhausted";
+    case "content-filter":
+      return "content-filtered";
+    case "unauthorized":
+      return "unauthorized (API key issue)";
+    case "forbidden":
+      return "forbidden";
+    case "aborted":
+      return "aborted";
+    case "network":
+      return "network error";
+    case "server":
+      return "provider server error";
+    case "empty":
+      return "empty response (possible timeout pre-stream)";
+    case "missing":
+      return "not in fan-out (disabled or env-gated)";
+    default:
+      return "error";
+  }
+}
+
 export function formatPanelStatusBlock(status: PanelStatusEntry[]): string {
   const lines: string[] = ["[PERSONA PANEL STATUS]"];
   for (const e of status) {
     if (e.ok) {
       lines.push(`- ${e.slot} (${e.provider}): ok`);
     } else {
-      lines.push(`- ${e.slot} (${e.provider}): UNAVAILABLE — ${e.reason ?? "unknown"}`);
+      // Wave 22d — when the entry carries a classified errorKind,
+      // surface the human label up front so the reader sees
+      // "(timed out)" / "(rate-limited)" / "(quota-exhausted)"
+      // immediately rather than parsing the raw upstream message.
+      // LFM-filed #22 minor ask: "a per-slot soft-timeout note in
+      // the output (vs a bare 'operation aborted') would make it
+      // clearer the panel ran 4/5". Falls back to the historical
+      // "UNAVAILABLE — <reason>" shape when errorKind is absent so
+      // hand-built test entries + callers that construct
+      // PanelStatusEntry directly stay compatible.
+      const rawReason = e.reason ?? "unknown";
+      if (e.errorKind) {
+        const label = panelStatusEntryLabel(e);
+        const labelHead = label.toLowerCase().split(" ")[0] ?? "";
+        const showRaw =
+          label !== rawReason &&
+          !rawReason.toLowerCase().includes(labelHead);
+        lines.push(
+          `- ${e.slot} (${e.provider}): UNAVAILABLE (${label})${showRaw ? ` — ${rawReason}` : ""}`,
+        );
+      } else {
+        lines.push(`- ${e.slot} (${e.provider}): UNAVAILABLE — ${rawReason}`);
+      }
     }
   }
   const missing = status.filter((e) => !e.ok);

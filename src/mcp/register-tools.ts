@@ -6,7 +6,6 @@ import { createReport } from "@/lib/feedback";
 import { formatFlushNotice } from "@/lib/feedback-flush";
 import { listHistory, saveHistory, type HistoryAnswer, type HistoryEntry } from "@/lib/history";
 import { PROVIDERS, PROVIDER_LABELS, type Provider } from "@/lib/providers";
-import { exhaustedNonClaudeCount } from "@/lib/quota";
 import { findEnsemble } from "@/lib/roles";
 import { formatSelfCheckReport, selfCheck } from "@/lib/self-check";
 import {
@@ -64,6 +63,10 @@ import {
   formatResolutionReport,
   resolveRefs,
 } from "@/lib/doc-review-resolver";
+import {
+  buildPreflightStatus,
+  formatPreflightBlock,
+} from "@/lib/preflight-status";
 
 // Shared MCP tool registration — called by BOTH the stdio entry point
 // (src/mcp/server.ts) and the HTTP entry point (src/mcp/http-server.ts).
@@ -580,12 +583,18 @@ export function registerAllTools(server: McpServer): void {
       projectRoot: projectRootArg,
     },
     async ({ prompt, includeClaude, ensembleId, context, projectRoot }) => {
-      // Wave 11 recursion-guard adjustment: when 2+ non-Claude providers
-      // are exhausted, ignore the default-off behavior and bring Claude
-      // into the fan-out anyway. Without this the user gets a fan-out
-      // with 0-1 valid answers and a useless synth.
-      const effectiveIncludeClaude =
-        includeClaude || exhaustedNonClaudeCount() >= 2;
+      // Wave 22d — pre-flight loud degradation (LFM-filed #33 first
+      // ask). Query quota state + env-gating BEFORE the fan-out
+      // fires so the caller knows "running 2/4 providers — gemini:
+      // quota-exhausted, claude: skipped (not included by caller)"
+      // up front rather than inferring it post-hoc from per-provider
+      // error fields. Note: buildPreflightStatus internally applies
+      // the same auto-include-Claude-when-2+-exhausted rule that
+      // computed effectiveIncludeClaude below, so the displayed
+      // pre-flight reflects what runFanOut WILL actually do.
+      const preflight = buildPreflightStatus({ includeClaude });
+      const preflightBlock = formatPreflightBlock(preflight);
+      const effectiveIncludeClaude = preflight.effectiveIncludeClaude;
       const pc = loadProjectContext(projectRoot);
       const composedContext = composeContextForNonPanelTool(pc, context);
       const answers = await runFanOut(prompt, {
@@ -606,7 +615,14 @@ export function registerAllTools(server: McpServer): void {
         console.error("[mcp] history save failed:", err);
       }
       return {
-        content: [{ type: "text", text: withFlushNotice(formatAnswers(answers)) }],
+        content: [
+          {
+            type: "text",
+            text: withFlushNotice(
+              `${preflightBlock}\n\n---\n\n${formatAnswers(answers)}`,
+            ),
+          },
+        ],
       };
     },
   );
@@ -637,10 +653,17 @@ export function registerAllTools(server: McpServer): void {
       projectRoot: projectRootArg,
     },
     async ({ prompt, includeClaude, synthesizerId, context, projectRoot }) => {
+      // Wave 22d — pre-flight loud degradation. Same rationale as
+      // apex_fanout above; LFM specifically called out that they
+      // act on confidence scores from apex_synthesize, so a silent
+      // 2-model panel was the worst case.
+      const preflight = buildPreflightStatus({ includeClaude });
+      const preflightBlock = formatPreflightBlock(preflight);
+      const effectiveIncludeClaude = preflight.effectiveIncludeClaude;
       const pc = loadProjectContext(projectRoot);
       const composedContext = composeContextForNonPanelTool(pc, context);
       const answers = await runFanOut(prompt, {
-        includeClaude,
+        includeClaude: effectiveIncludeClaude,
         context: composedContext,
       });
       const synthInput: FanOutAnswer[] = answers.map((a) => ({
@@ -706,7 +729,7 @@ export function registerAllTools(server: McpServer): void {
           {
             type: "text",
             text: withFlushNotice(
-              `${synthSection}\n\n---\n\n# Individual Responses\n\n${formatAnswers(answers)}`,
+              `${preflightBlock}\n\n---\n\n${synthSection}\n\n---\n\n# Individual Responses\n\n${formatAnswers(answers)}`,
             ),
           },
         ],
