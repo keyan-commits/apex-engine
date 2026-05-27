@@ -2,7 +2,10 @@
 
 > Resume card — read first. Volatile state only; `CLAUDE.md` is stable architecture, git log is the full changelog. No prose restatement of diffs here.
 
-**Updated:** 2026-05-28 (night)
+**Updated:** 2026-05-28 (night — session end)
+
+> **Restart required before next session is fully functional.** This session is still running on the in-memory pre-bootstrap CLAUDE.md. The merged CLAUDE.md (symlink), the SessionStart nudge hook, and the `/handoff` + `/handoff-init` skills only load at the start of a fresh CC session. After restart, verify with:
+> `ls -l ~/.claude/CLAUDE.md` (should show symlink → `~/Study/claude-handoff/assets/CLAUDE.md`).
 
 ## Now — Wave 24: adopt structured HANDOFF schema (Factory.ai Missions)
 
@@ -11,8 +14,9 @@
 - Past Wave-summary tables (23 → 7 + earlier sections) preserved below — new waves collapse into one-row entries there.
 - Convention footer rewritten to document the schema + Rule 2A tiering + SHA-backfill discipline.
 - Installed shared `~/Study/claude-handoff` kit on this Mac via `bootstrap.sh` (symlink mode): merged CLAUDE.md, `/handoff` + `/handoff-init` skills, SessionStart nudge hook. Reconcile diff confirmed the merged CLAUDE.md is a strict superset of the original 9-rule pipeline + adds Rule 2A scope-tiering + Phase 4.5 DOGFOOD + Rule 9A shape-approval. Backup at `~/.claude/.handoff-backup-20260527-110026/`.
+- Wave 24 SHA-backfill landed as a single fixup commit `1c344f2` — proof-points the new convention's "one fixup, never a trail" rule.
 
-**Left undone:** (none — pure schema adoption)
+**Left undone:** (none — pure schema adoption; the CC restart is a user action, not deferred work)
 
 **Commands run:**
 - `gh auth status` → ok (`keyan-commits`)
@@ -20,22 +24,27 @@
 - `cd ~/Study/claude-handoff && ./bootstrap.sh` → exit 0
 - `diff ~/.claude/.handoff-backup-*/CLAUDE.md ~/.claude/CLAUDE.md` → expected restructure; semantic-superset spot-check passed (Rule 4 plan-format headings, 4 investigation subagents, 5 shorthand overrides, Agent Team Config all present in merged)
 - `git pull --ff-only` → already up to date
-- `git commit` → `6b1a21b` · `git push` → exit 0
+- `git commit` (wave) → `6b1a21b` · `git push` → exit 0
+- `git commit` (SHA-backfill fixup) → `1c344f2` · `git push` → exit 0
 
 **Issues discovered (out of scope):** (none)
 
 **Validation contract:**
-- [x] HANDOFF top is the new 5-field block, not the prose chain
-- [x] Wave-summary tables for past waves preserved verbatim
-- [x] Convention footer documents schema + Rule 2A tiering + SHA-backfill rule
-- [x] `~/.claude/CLAUDE.md` reconcile passes (merged is a superset of original)
-- [ ] CC restart picks up the merged CLAUDE.md + SessionStart hook + `/handoff` + `/handoff-init` skills — user's call after this commit lands
+- [x] HANDOFF top is the new 5-field block, not the prose chain.
+- [x] Wave-summary tables for past waves preserved verbatim.
+- [x] Convention footer documents schema + Rule 2A tiering + SHA-backfill rule.
+- [x] `~/.claude/CLAUDE.md` reconcile passes (merged is a superset of original).
+- [x] SHA-backfill proof-point: exactly one fixup commit (`1c344f2`), no "patch Wave NN SHA" trail.
+- [ ] **Post-restart verification (user action):** new CC session surfaces the SessionStart nudge with the NOW block; `/handoff` + `/handoff-init` skills are listed in available slash-commands.
 
 ## Next
 
-1. Verify Production-tier on the `gemini-3.5-flash` candidate (GH #35) before bumping `gemini-2.5-flash` in `providers.ts` + `synthesizer-options.ts`. Re-check `ai.google.dev/gemini-api/docs/models` first.
-2. Backlog **12c** — disagreement-driven re-fan-out (~120 LOC; needs 2nd-panel UX).
-3. Backlog **12d** — chain-of-verification lite (~150 LOC; claim extract + footnotes).
+1. **Restart Claude Code** to activate the merged CLAUDE.md + SessionStart hook + `/handoff` + `/handoff-init` skills. (User action; not a wave.)
+2. Verify Production-tier on the `gemini-3.5-flash` candidate (GH #35) before bumping `gemini-2.5-flash` in `providers.ts` + `synthesizer-options.ts`. Re-check `ai.google.dev/gemini-api/docs/models` first.
+3. Backlog **12c** — disagreement-driven re-fan-out (~120 LOC; needs 2nd-panel UX).
+4. Backlog **12d** — chain-of-verification lite (~150 LOC; claim extract + footnotes).
+5. **Opt-in (PART 3 from the other CC's setup instructions):** `/handoff-init` inside apex-engine to install the pre-commit guardrail that REQUIRES every commit to touch `HANDOFF.md` (matches our every-wave cadence). Non-destructive; toggle off with `git config handoff.requireOnCommit false`.
+6. **Opt-in (PART 4):** `/handoff-init` in any other repo to spread the HANDOFF + INDEX pattern. Reports "already initialized" if re-run.
 
 ## Blockers
 
