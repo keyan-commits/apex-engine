@@ -147,6 +147,28 @@ export function isSafePublicHost(hostname: string): boolean {
   if (noBrackets === "::1" || noBrackets === "0:0:0:0:0:0:0:1") return false;
   if (noBrackets.startsWith("fe80:")) return false;
   if (noBrackets.startsWith("fc") || noBrackets.startsWith("fd")) return false; // ULA
+  // Wave 21c (C1) — IPv4-mapped IPv6 SSRF vector. `http://[::ffff:127.0.0.1]/`
+  // normalizes through `new URL()` to hostname `[::ffff:7f00:1]`; after
+  // bracket strip, none of the dot-decimal IPv4 regexes catch the
+  // `::ffff:` prefix form. Same vector works for `::ffff:10.x.x.x`,
+  // `::ffff:192.168.x.x`, etc. — full RFC-1918 + loopback exposure.
+  // Reject all IPv4-mapped IPv6 addresses; legitimate public IPv4 hosts
+  // arrive as plain dotted-decimal, never as `::ffff:` mapped form, so
+  // there's no real-world cost to a blanket reject.
+  if (/^::ffff:/i.test(noBrackets)) return false;
+  // Wave 21c (H1) — DNS hostnames for cloud-metadata services. These
+  // resolve to 169.254.169.254 + variants but the IP-pattern check
+  // only catches the literal numeric form. A hallucinated/malicious URL
+  // pointing at `metadata.google.internal` would still hit the metadata
+  // service via DNS resolution. Hostname denylist is cheap and explicit.
+  const metaHosts = new Set([
+    "metadata.google.internal",
+    "metadata.azure.internal",
+    "instance-data.ec2.internal",
+    "metadata",
+    "metadata.local",
+  ]);
+  if (metaHosts.has(h)) return false;
   return true;
 }
 

@@ -10,6 +10,12 @@ import {
   streamOpenaiContentFilterFallback,
 } from "@/lib/engine";
 import { classifyError, userFacingMessage } from "@/lib/errors";
+import {
+  applyAckChunk,
+  applyAckFlush,
+  createAckState,
+  type AckState,
+} from "@/lib/ack-token-strip";
 import { detectFollowUp } from "@/lib/follow-up";
 import {
   noteCacheMiss,
@@ -831,13 +837,13 @@ export async function POST(req: Request) {
         // client. Cap (256 chars) means a malformed response without a
         // newline gives up gracefully + flushes the buffer to the
         // client unchanged.
+        // Wave 21c — ack-token strip extracted to src/lib/ack-token-strip.ts
+        // so the openai content-filter substitute path (below) can reuse
+        // the same machinery. Previously the substitute stream consumed
+        // chunks raw, leaking `[grounded]` into user-visible text and
+        // never emitting the grounded-ack event for that slot.
         const ackActive = webContextBlock.length > 0;
-        const ackState: Record<
-          string,
-          { stripped: boolean; buffer: string; emitted: boolean }
-        > = {};
-        const ACK_BUFFER_CAP = 256;
-        const ackTokenRe = /^\s*\[(grounded|ungrounded)\]\s*\n?/i;
+        const ackState: Record<string, AckState> = {};
 
         await Promise.all(
           items.map(async (item) => {
@@ -849,87 +855,26 @@ export async function POST(req: Request) {
               return;
             }
             if (ackActive) {
-              ackState[item.provider] = {
-                stripped: false,
-                buffer: "",
-                emitted: false,
-              };
+              ackState[item.provider] = createAckState();
             }
             try {
               for await (const chunk of item.stream) {
-                acc.text += chunk;
-                let toSend = chunk;
-                // Ack-token strip: only on the FIRST line of the
-                // response. Once stripped, every subsequent chunk
-                // passes through unchanged.
-                if (ackActive) {
-                  const st = ackState[item.provider];
-                  if (st && !st.stripped) {
-                    st.buffer += chunk;
-                    const newlineIdx = st.buffer.indexOf("\n");
-                    const overCap = st.buffer.length >= ACK_BUFFER_CAP;
-                    if (newlineIdx !== -1 || overCap) {
-                      const m = ackTokenRe.exec(st.buffer);
-                      if (m) {
-                        const flag = m[1].toLowerCase() === "grounded";
-                        send({
-                          type: "grounded-ack",
-                          provider: item.provider,
-                          grounded: flag,
-                        });
-                        st.emitted = true;
-                        // Strip the matched token + trailing newline
-                        // from the buffer; emit what's left.
-                        const remainder = st.buffer.slice(m[0].length);
-                        toSend = remainder;
-                        // The acc.text accumulator should ALSO not
-                        // contain the token (so saved history is
-                        // clean).
-                        acc.text = remainder;
-                      } else {
-                        // No ack token in the first line — provider
-                        // ignored the instruction. Emit null flag once
-                        // for diagnostics; pass the buffer through.
-                        send({
-                          type: "grounded-ack",
-                          provider: item.provider,
-                          grounded: null,
-                        });
-                        st.emitted = true;
-                        toSend = st.buffer;
-                        acc.text = st.buffer;
-                      }
-                      st.stripped = true;
-                      st.buffer = "";
-                    } else {
-                      // Still buffering — don't emit anything yet.
-                      toSend = "";
-                    }
-                  }
-                }
-                if (toSend) {
-                  send({ type: "delta", provider: item.provider, text: toSend });
-                }
+                applyAckChunk({
+                  chunk,
+                  acc,
+                  state: ackState[item.provider] ?? createAckState(),
+                  provider: item.provider,
+                  send,
+                  ackActive,
+                });
               }
-              // Stream ended while still buffering — flush whatever's
-              // in the ack buffer.
-              if (ackActive) {
-                const st = ackState[item.provider];
-                if (st && !st.stripped && st.buffer) {
-                  send({
-                    type: "grounded-ack",
-                    provider: item.provider,
-                    grounded: null,
-                  });
-                  send({
-                    type: "delta",
-                    provider: item.provider,
-                    text: st.buffer,
-                  });
-                  acc.text = st.buffer;
-                  st.stripped = true;
-                }
-              }
+              applyAckFlush({
+                acc,
+                state: ackState[item.provider] ?? createAckState(),
+                provider: item.provider,
+                send,
+                ackActive,
+              });
               const latencyMs = Date.now() - (providerStart[item.provider] ?? Date.now());
               acc.latencyMs = latencyMs;
               if (acc.text) cachePut(key, acc.text);
@@ -970,14 +915,32 @@ export async function POST(req: Request) {
                     systemPrompt ?? DEFAULT_SYSTEM_PROMPT,
                     signal,
                   );
+                  // Wave 21c — wrap the substitute stream with the same
+                  // ack-strip machinery as the primary loop. Reuse the
+                  // existing ackState entry (initialized when ackActive,
+                  // unchanged by the failed primary because Azure
+                  // rejects before any chunk yields). Without this the
+                  // substitute's `[grounded]` token leaks to the user
+                  // AND the grounded-ack event never fires for the slot.
+                  const subAckState =
+                    ackState[item.provider] ?? createAckState();
                   for await (const chunk of subStream) {
-                    acc.text += chunk;
-                    send({
-                      type: "delta",
+                    applyAckChunk({
+                      chunk,
+                      acc,
+                      state: subAckState,
                       provider: item.provider,
-                      text: chunk,
+                      send,
+                      ackActive,
                     });
                   }
+                  applyAckFlush({
+                    acc,
+                    state: subAckState,
+                    provider: item.provider,
+                    send,
+                    ackActive,
+                  });
                   acc.error = null;
                   acc.latencyMs = Date.now() - subStart;
                   acc.model = OPENAI_FILTER_FALLBACK_MODEL;
@@ -1224,6 +1187,40 @@ export async function POST(req: Request) {
               })) {
                 synthText += chunk;
                 send({ type: "synth-delta", text: chunk });
+              }
+              // Wave 21c (LFM #30) — synth-empty fallback. Real failure:
+              // synth model returned zero tokens (no error, just empty
+              // output) and the synchronous MCP caller got a blank
+              // best-answer. With Waves 19a/20b already covering errored
+              // SLOTS feeding the synth, this closes the case where the
+              // synth ITSELF produces nothing — we fall back to the
+              // strongest individual answer using the same precedence
+              // chain history_search uses (claude → openai → llama →
+              // gemini → deepseek). The fallback is labeled clearly so
+              // the user knows what they're seeing.
+              if (!synthText.trim()) {
+                const fallbackOrder: Provider[] = [
+                  "claude",
+                  "openai",
+                  "llama",
+                  "gemini",
+                  "deepseek",
+                ];
+                const best = fallbackOrder
+                  .map((p) => ({ p, a: answerMap[p] }))
+                  .find(
+                    ({ a }) => !a.error && a.text.trim().length > 0,
+                  );
+                if (best) {
+                  const label = `_Synthesizer returned empty output — falling back to ${best.p.toUpperCase()}'s individual response (the strongest available)._\n\n`;
+                  synthText = label + best.a.text;
+                  send({ type: "synth-delta", text: synthText });
+                } else {
+                  const empty =
+                    "_Synthesizer returned empty output and no individual provider succeeded. Try re-running._";
+                  synthText = empty;
+                  send({ type: "synth-delta", text: empty });
+                }
               }
               if (synthText) {
                 cachePut(synthKey, synthText);

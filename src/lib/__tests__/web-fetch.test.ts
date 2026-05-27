@@ -68,6 +68,58 @@ describe("isSafePublicHost — SSRF guard", () => {
     expect(isSafePublicHost("")).toBe(false);
     expect(isSafePublicHost("host with space")).toBe(false);
   });
+
+  describe("Wave 21c — IPv4-mapped IPv6 SSRF (C1, verified live by QA agent)", () => {
+    it("rejects ::ffff: prefixed IPv6 forms that map to loopback IPv4", () => {
+      // `http://[::ffff:127.0.0.1]/` normalizes through `new URL()` to
+      // hostname `[::ffff:7f00:1]`. After bracket strip none of the
+      // dot-decimal IPv4 regexes catch the `::ffff:` form.
+      expect(isSafePublicHost("::ffff:7f00:1")).toBe(false);
+      expect(isSafePublicHost("[::ffff:7f00:1]")).toBe(false);
+    });
+
+    it("rejects ::ffff: prefixed IPv6 forms mapping to RFC1918 (10/8, 172.16/12, 192.168/16)", () => {
+      expect(isSafePublicHost("::ffff:a00:1")).toBe(false); // 10.0.0.1
+      expect(isSafePublicHost("::ffff:ac10:1")).toBe(false); // 172.16.0.1
+      expect(isSafePublicHost("::ffff:c0a8:101")).toBe(false); // 192.168.1.1
+      expect(isSafePublicHost("[::ffff:c0a8:101]")).toBe(false);
+    });
+
+    it("rejects ::ffff: prefixed IPv6 mapping to link-local + AWS metadata", () => {
+      expect(isSafePublicHost("::ffff:a9fe:a9fe")).toBe(false); // 169.254.169.254
+    });
+
+    it("rejects even ::ffff: forms that would map to PUBLIC IPv4 (blanket reject)", () => {
+      // Legitimate public hosts arrive as plain dotted-decimal, never
+      // as ::ffff:-mapped. Anyone using the mapped form is more likely
+      // trying to bypass the guard than legitimately fetching.
+      expect(isSafePublicHost("::ffff:8.8.8.8")).toBe(false);
+      expect(isSafePublicHost("::ffff:808:808")).toBe(false);
+    });
+
+    it("is case-insensitive on ::FFFF: prefix", () => {
+      expect(isSafePublicHost("::FFFF:7f00:1")).toBe(false);
+      expect(isSafePublicHost("::FfFf:a00:1")).toBe(false);
+    });
+  });
+
+  describe("Wave 21c — DNS cloud-metadata SSRF (H1)", () => {
+    it("rejects metadata.google.internal", () => {
+      expect(isSafePublicHost("metadata.google.internal")).toBe(false);
+    });
+    it("rejects metadata.azure.internal", () => {
+      expect(isSafePublicHost("metadata.azure.internal")).toBe(false);
+    });
+    it("rejects instance-data.ec2.internal", () => {
+      expect(isSafePublicHost("instance-data.ec2.internal")).toBe(false);
+    });
+    it("rejects bare `metadata` hostname", () => {
+      expect(isSafePublicHost("metadata")).toBe(false);
+    });
+    it("is case-insensitive on metadata hosts", () => {
+      expect(isSafePublicHost("Metadata.Google.Internal")).toBe(false);
+    });
+  });
 });
 
 describe("htmlToText", () => {

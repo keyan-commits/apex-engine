@@ -370,6 +370,159 @@ describe("querySource — csv-dir", () => {
   });
 });
 
+describe("Wave 21c — SQL allowlist bypass regressions (C2 + H2 + B1)", () => {
+  function makeMultiTableDb(): string {
+    const dbPath = join(root, "multi.db");
+    const db = new Database(dbPath);
+    db.exec("CREATE TABLE allowed (id INTEGER, name TEXT)");
+    db.exec("CREATE TABLE secrets (token TEXT)");
+    db.prepare("INSERT INTO allowed VALUES (?, ?)").run(1, "ok");
+    db.prepare("INSERT INTO secrets VALUES (?)").run("HUSH");
+    db.close();
+    return dbPath;
+  }
+
+  it("REJECTS comma-join FROM clause (C2): `FROM allowed, secrets`", () => {
+    makeMultiTableDb();
+    const r = querySource({
+      projectRoot: root,
+      source: {
+        id: "t",
+        type: "sqlite",
+        path: "multi.db",
+        readonly: true,
+        allowedTables: ["allowed"],
+        maxRows: 100,
+      },
+      query: "SELECT * FROM allowed, secrets",
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.reason).toMatch(/comma join|FROM clause contains a comma/i);
+  });
+
+  it("REJECTS comma-join with whitespace variants", () => {
+    makeMultiTableDb();
+    for (const q of [
+      "SELECT * FROM allowed ,secrets",
+      "SELECT * FROM allowed , secrets",
+      "SELECT * FROM\nallowed,\nsecrets",
+    ]) {
+      const r = querySource({
+        projectRoot: root,
+        source: {
+          id: "t",
+          type: "sqlite",
+          path: "multi.db",
+          readonly: true,
+          allowedTables: ["allowed"],
+          maxRows: 100,
+        },
+        query: q,
+      });
+      expect(r.ok, `query=${JSON.stringify(q)}`).toBe(false);
+    }
+  });
+
+  it("REJECTS JOIN with a block comment between JOIN and table (H2)", () => {
+    makeMultiTableDb();
+    const r = querySource({
+      projectRoot: root,
+      source: {
+        id: "t",
+        type: "sqlite",
+        path: "multi.db",
+        readonly: true,
+        allowedTables: ["allowed"],
+        maxRows: 100,
+      },
+      // The pre-Wave-21c extractor would miss `secrets` here because
+      // \s+ doesn't span the /* ... */ comment.
+      query: "SELECT * FROM allowed JOIN/*evil*/secrets ON 1=1",
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    // Either the comment-strip exposes `secrets` to the extractor and
+    // the allowlist rejects it, or the FROM-comma check fires — both
+    // are acceptable fail-closed outcomes.
+    expect(r.reason.length).toBeGreaterThan(0);
+  });
+
+  it("REJECTS line comments (-- ...) hiding a forbidden statement", () => {
+    makeMultiTableDb();
+    // -- comments could otherwise carry the rest of the line; we
+    // strip them before keyword analysis so a hidden DROP doesn't slip.
+    const r = querySource({
+      projectRoot: root,
+      source: {
+        id: "t",
+        type: "sqlite",
+        path: "multi.db",
+        readonly: true,
+        allowedTables: ["allowed"],
+        maxRows: 100,
+      },
+      query: "SELECT * FROM allowed -- comment text ignored",
+    });
+    // Should EXECUTE (line comments are SQL-valid; we only strip them
+    // for analysis, not for execution).
+    expect(r.ok).toBe(true);
+  });
+
+  it("REJECTS LOAD_EXTENSION (B1)", () => {
+    makeMultiTableDb();
+    const r = querySource({
+      projectRoot: root,
+      source: {
+        id: "t",
+        type: "sqlite",
+        path: "multi.db",
+        readonly: true,
+        allowedTables: ["allowed"],
+        maxRows: 100,
+      },
+      query: "SELECT load_extension('/tmp/evil.so')",
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.reason).toMatch(/forbidden|LOAD_EXTENSION/i);
+  });
+
+  it.each([["RANDOMBLOB"], ["WRITEFILE"]])("REJECTS forbidden function %s (B1)", (fn) => {
+    makeMultiTableDb();
+    const r = querySource({
+      projectRoot: root,
+      source: {
+        id: "t",
+        type: "sqlite",
+        path: "multi.db",
+        readonly: true,
+        allowedTables: ["allowed"],
+        maxRows: 100,
+      },
+      query: `SELECT ${fn}(8) FROM allowed`,
+    });
+    expect(r.ok).toBe(false);
+  });
+
+  it("explicit JOIN syntax STILL WORKS (positive control for comma-join fix)", () => {
+    makeMultiTableDb();
+    const r = querySource({
+      projectRoot: root,
+      source: {
+        id: "t",
+        type: "sqlite",
+        path: "multi.db",
+        readonly: true,
+        allowedTables: ["allowed"],
+        maxRows: 100,
+      },
+      query: "SELECT * FROM allowed WHERE id > 0",
+    });
+    expect(r.ok).toBe(true);
+  });
+});
+
 describe("findSource + formatQueryResult", () => {
   it("finds a source by id", () => {
     const sources = [

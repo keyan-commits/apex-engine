@@ -47,8 +47,45 @@ export type QueryResult =
 // Forbidden SQL keywords that would mutate data or escape the read-only
 // envelope. The check is conservative — false positives are acceptable
 // (the user just rephrases their SELECT); false negatives are NOT.
+//
+// Wave 21c (B1) — added LOAD_EXTENSION / RANDOMBLOB / WRITEFILE. The
+// first loads an arbitrary .so / .dylib via sqlite's extension API
+// (better-sqlite3 prebuilt binary disables extensions at compile time,
+// so this is defense-in-depth — but if a future build re-enables them
+// the keyword regex catches it). RANDOMBLOB is used by some
+// sqlite-injection PoCs to amplify CPU; WRITEFILE is a sqlite-ext
+// function that writes to the filesystem.
 const SQL_FORBIDDEN_KEYWORD_RE =
-  /\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|RENAME|REPLACE|ATTACH|DETACH|VACUUM|REINDEX|PRAGMA|EXEC|EXECUTE|MERGE|UPSERT|GRANT|REVOKE)\b/i;
+  /\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|RENAME|REPLACE|ATTACH|DETACH|VACUUM|REINDEX|PRAGMA|EXEC|EXECUTE|MERGE|UPSERT|GRANT|REVOKE|LOAD_EXTENSION|RANDOMBLOB|WRITEFILE)\b/i;
+
+// Wave 21c (C2 + H2) — strip SQL comments BEFORE running the table
+// extractor. Real failure: `JOIN/*x*/secrets` slipped past the
+// extractor's `\s+` (which doesn't match comments). Block comments
+// `/* */` and line comments `-- ...` both stripped. Operates on a COPY
+// of the SQL only used for analysis; the original is what executes —
+// SQLite handles its own comments.
+function stripSqlComments(sql: string): string {
+  return sql
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/--[^\n]*/g, " ");
+}
+
+// Wave 21c (C2) — reject comma joins. Real failure: `SELECT * FROM
+// allowed, secret_table` — the table extractor only catches `allowed`,
+// the allowlist check passes, and SQLite executes the implicit cross-
+// join exposing all rows of secret_table. Modern SQL uses explicit
+// JOIN syntax; comma joins are deprecated. Detect any comma in a FROM
+// clause (between FROM and the next clause keyword, NOT inside
+// parentheses) and reject the entire query — fail-closed.
+function hasCommaJoin(sqlNoComments: string): boolean {
+  // Match `FROM` followed by zero-or-more non-paren-non-comma chars,
+  // then a comma. The `[^(),]*?` lazy quantifier excludes `(` and `)`
+  // so a comma INSIDE a subquery's parens (which is a separate FROM
+  // scope) doesn't trip the outer FROM's check. The same pattern
+  // catches the comma between a subquery's own FROM and its second
+  // table (recursive risk surface).
+  return /\bFROM\b[^(),]*?,/i.test(sqlNoComments);
+}
 
 // Statement-terminator (semicolon) check — disallow multiple statements
 // regardless of what's after the first.
@@ -116,10 +153,14 @@ function querySqlite(
       reason: "query must be a single SELECT statement (CTEs / WITH / multi-statement / DDL all rejected)",
     };
   }
-  if (SQL_FORBIDDEN_KEYWORD_RE.test(sql)) {
+  // Wave 21c — strip comments BEFORE any analysis. The actual SQLite
+  // execution sees the raw `sql`; SQLite parses its own comments. This
+  // strip is only for our regex-based analysis layer.
+  const sqlForAnalysis = stripSqlComments(sql);
+  if (SQL_FORBIDDEN_KEYWORD_RE.test(sqlForAnalysis)) {
     return {
       ok: false,
-      reason: "query contains a forbidden SQL keyword (read-only sources reject INSERT/UPDATE/DELETE/DDL/PRAGMA/etc.)",
+      reason: "query contains a forbidden SQL keyword (read-only sources reject INSERT/UPDATE/DELETE/DDL/PRAGMA/LOAD_EXTENSION/etc.)",
     };
   }
   if (!isSingleStatement(sql)) {
@@ -128,8 +169,14 @@ function querySqlite(
       reason: "query must be a single statement (no embedded semicolons)",
     };
   }
+  if (hasCommaJoin(sqlForAnalysis)) {
+    return {
+      ok: false,
+      reason: "comma joins are rejected (the FROM clause contains a comma) — rewrite with explicit JOIN syntax (INNER JOIN / LEFT JOIN / ...). Real failure: the table-extractor only catches the first identifier after FROM, so `FROM allowed, secret` would leak secret past the allowlist.",
+    };
+  }
 
-  const referenced = extractReferencedTables(sql);
+  const referenced = extractReferencedTables(sqlForAnalysis);
   if (referenced.length === 0) {
     return {
       ok: false,
