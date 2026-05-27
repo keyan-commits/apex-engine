@@ -449,6 +449,45 @@ export function streamOpenaiContentFilterFallback(
   );
 }
 
+// Wave 22a — Gemini quota-exhaust cross-provider substitution.
+// When Gemini's free-tier 429 fires (Google AI Studio's
+// `free_tier_requests` quotaMetric / RESOURCE_EXHAUSTED), the slot
+// would otherwise drop and the panel would degrade from N → N-1
+// reviewers. This helper streams a substitute completion via Groq
+// using `llama-3.1-8b-instant` — Production tier on Groq (verified
+// 2026-05-27 from console.groq.com/docs/models), the smallest+fastest
+// Production-tier non-Llama-70B, non-gpt-oss option on a connector
+// we already own.
+//
+// Why llama-3.1-8b-instant and not openai/gpt-oss-20b: the openai
+// slot already substitutes to openai/gpt-oss-120b. Using gpt-oss-20b
+// for the Gemini substitute would mean a quota-degraded panel could
+// have 2 of 5 slots running the same gpt-oss release pair (same
+// post-training lineage → high correlation). Llama 3.1 8B at ~9×
+// smaller scale than the existing Llama 3.3 70B slot makes
+// qualitatively different errors and matches the "fast slot"
+// character of gemini-2.5-flash. MoA panel verdict 2026-05-27,
+// confidence 78.
+//
+// Substitute is env-gated via APEX_GEMINI_QUOTA_FALLBACK; default
+// "substitute". Set to "skip" to opt out and let the slot drop.
+export const GEMINI_QUOTA_FALLBACK_MODEL = "llama-3.1-8b-instant";
+
+export function streamGeminiQuotaFallback(
+  prompt: string,
+  systemPrompt: string,
+  signal: AbortSignal,
+): AsyncGenerator<string, StreamUsage | null, undefined> {
+  const timeoutSignal = AbortSignal.timeout(DEFAULT_PROVIDER_TIMEOUT_MS);
+  const combined = AbortSignal.any([signal, timeoutSignal]);
+  return streamGroqText(
+    GEMINI_QUOTA_FALLBACK_MODEL,
+    prompt,
+    systemPrompt,
+    combined,
+  );
+}
+
 // Wave 15a — DeepSeek text-only streaming. Same shape as streamGroqText
 // but routes through the @ai-sdk/deepseek provider. DeepSeek doesn't
 // support multimodal inputs, so the call site handles image attachments

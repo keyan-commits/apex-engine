@@ -2,6 +2,7 @@ export type ErrorKind =
   | "unauthorized"
   | "forbidden"
   | "rate-limited"
+  | "gemini-quota-exhausted"
   | "timeout"
   | "aborted"
   | "network"
@@ -71,6 +72,25 @@ export function classifyError(err: unknown): ClassifiedError {
       message = "Gemini free-tier daily quota hit — resets at UTC midnight (no billing required)";
     } else if (freeTier) {
       message = "Free-tier rate limit hit — quota resets daily (no billing required)";
+    }
+    // Wave 22a — Gemini free-tier quota exhaustion gets its own kind so
+    // route.ts can route it through the cross-provider substitute path
+    // (llama-3.1-8b-instant on Groq, mirror of Wave 20c's openai
+    // content-filter substitute). We narrow on BOTH the free-tier marker
+    // AND the gemini provider marker — non-free-tier 429s (burst-rate
+    // limits) should still classify as plain "rate-limited" and resolve
+    // on retry rather than substituting. RESOURCE_EXHAUSTED is the
+    // additional canonical marker Google AI Studio emits alongside the
+    // `free_tier_requests` quotaMetric.
+    if (
+      provider === "gemini" &&
+      (freeTier || /RESOURCE_EXHAUSTED/.test(text))
+    ) {
+      return {
+        kind: "gemini-quota-exhausted",
+        message,
+        ...(retryAfterMs ? { retryAfterMs } : {}),
+      };
     }
     return {
       kind: "rate-limited",

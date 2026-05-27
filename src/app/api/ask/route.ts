@@ -6,7 +6,9 @@ import { estimateCost } from "@/lib/cost";
 import {
   DEFAULT_SYSTEM_PROMPT,
   fanOut,
+  GEMINI_QUOTA_FALLBACK_MODEL,
   OPENAI_FILTER_FALLBACK_MODEL,
+  streamGeminiQuotaFallback,
   streamOpenaiContentFilterFallback,
   type StreamUsage,
 } from "@/lib/engine";
@@ -998,6 +1000,116 @@ export async function POST(req: Request) {
                 } catch (subErr) {
                   const subMsg = userFacingMessage(subErr);
                   acc.error = `Content filter + substitute failed: ${subMsg}`;
+                  send({
+                    type: "error",
+                    provider: item.provider,
+                    message: acc.error,
+                  });
+                  // fall through to noteProviderFailure / recordAutoBug
+                  // for the SECONDARY failure
+                }
+              } else if (
+                // Wave 22a — Gemini quota-exhaust cross-provider
+                // substitution. Mirror of the Wave 20c openai
+                // content-filter substitute one branch up: when
+                // Gemini's free-tier daily quota fires
+                // (`free_tier_requests` / RESOURCE_EXHAUSTED 429),
+                // route the slot through llama-3.1-8b-instant on
+                // Groq (Production tier, verified 2026-05-27). Env-
+                // gated via APEX_GEMINI_QUOTA_FALLBACK; default
+                // "substitute". The narrow detection (kind ===
+                // "gemini-quota-exhausted", set in errors.ts only
+                // when BOTH provider==="gemini" AND free-tier/
+                // RESOURCE_EXHAUSTED markers match) ensures non-
+                // quota 429s (burst-rate limits) still classify as
+                // plain "rate-limited" and fall through to the
+                // normal error path rather than substituting.
+                classified.kind === "gemini-quota-exhausted" &&
+                item.provider === "gemini" &&
+                process.env.APEX_GEMINI_QUOTA_FALLBACK !== "skip" &&
+                !acc.text
+              ) {
+                try {
+                  send({
+                    type: "substituted",
+                    provider: "gemini",
+                    substituteModel: GEMINI_QUOTA_FALLBACK_MODEL,
+                    reason: message,
+                  });
+                  const subStart = Date.now();
+                  const subStream = streamGeminiQuotaFallback(
+                    promptWithContext,
+                    systemPrompt ?? DEFAULT_SYSTEM_PROMPT,
+                    signal,
+                  );
+                  const subAckState =
+                    ackState[item.provider] ?? createAckState();
+                  const subIter = subStream[Symbol.asyncIterator]();
+                  let subUsage: StreamUsage | null = null;
+                  while (true) {
+                    const step = await subIter.next();
+                    if (step.done) {
+                      subUsage = step.value ?? null;
+                      break;
+                    }
+                    applyAckChunk({
+                      chunk: step.value,
+                      acc,
+                      state: subAckState,
+                      provider: item.provider,
+                      send,
+                      ackActive,
+                    });
+                  }
+                  applyAckFlush({
+                    acc,
+                    state: subAckState,
+                    provider: item.provider,
+                    send,
+                    ackActive,
+                  });
+                  if (subUsage) {
+                    acc.inputTokens = subUsage.inputTokens;
+                    acc.outputTokens = subUsage.outputTokens;
+                    acc.costUsd = estimateCost(
+                      GEMINI_QUOTA_FALLBACK_MODEL,
+                      subUsage.inputTokens,
+                      subUsage.outputTokens,
+                    );
+                  }
+                  acc.error = null;
+                  acc.latencyMs = Date.now() - subStart;
+                  acc.model = GEMINI_QUOTA_FALLBACK_MODEL;
+                  acc.substituted = {
+                    from: item.model,
+                    reason: message,
+                  };
+                  if (acc.text) {
+                    const subKey = cacheKey({
+                      kind: "fanout",
+                      provider: item.provider,
+                      model: GEMINI_QUOTA_FALLBACK_MODEL,
+                      prompt: promptWithContext,
+                      systemPrompt: systemPrompt ?? null,
+                      role: item.role ?? null,
+                      upstreamSignature: body.attachments.length
+                        ? body.attachments
+                            .map((a) => a.sha256)
+                            .sort()
+                            .join(",")
+                        : "",
+                    });
+                    cachePut(subKey, acc.text);
+                  }
+                  send({
+                    type: "done",
+                    provider: item.provider,
+                    latencyMs: acc.latencyMs,
+                  });
+                  return;
+                } catch (subErr) {
+                  const subMsg = userFacingMessage(subErr);
+                  acc.error = `Gemini quota + substitute failed: ${subMsg}`;
                   send({
                     type: "error",
                     provider: item.provider,
