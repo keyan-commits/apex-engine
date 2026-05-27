@@ -80,6 +80,14 @@ import {
   type ValidationContract,
 } from "@/lib/validation-contract";
 import {
+  APEX_USER_TEST_CONSTANTS,
+  formatReport as formatUserTestReport,
+  listScenariosInDir,
+  loadScenarioFile,
+  runScenario,
+  type ScenarioResult,
+} from "@/lib/apex-user-test";
+import {
   buildPreflightStatus,
   formatPreflightBlock,
 } from "@/lib/preflight-status";
@@ -109,6 +117,7 @@ export const REGISTERED_TOOL_NAMES = [
   "apex_web_fetch",
   "apex_read_source",
   "apex_doc_review",
+  "apex_user_test",
 ];
 
 const CODE_REVIEW_MAX_CHARS = 8_000;
@@ -1885,6 +1894,144 @@ export function registerAllTools(server: McpServer): void {
       const body = `${synthSection}\n\n---\n\n# Individual Reviewer Responses\n\n${formatAnswers(answers)}`;
       return {
         content: [{ type: "text", text: withFlushNotice(body) }],
+      };
+    },
+  );
+
+  server.tool(
+    "apex_user_test",
+    `**Black-box user-testing validator for apex MCP tools.** Wave 28b — Factory.ai Missions architecture's "user-testing validator" pattern. Drives a target apex MCP tool through scripted scenarios checked into \`.apex/user-tests/*.json\` and reports pass/fail per scenario.\n\n**Scenario file format** (\`.apex/user-tests/<name>.json\`):\n\`\`\`json\n{\n  "name": "wave-22f-substitute-fires-on-quota-exhaust",\n  "tool": "apex_synthesize",\n  "args": { "prompt": "test", "includeClaude": false },\n  "assertions": [\n    { "kind": "contains", "value": "[PRE-FLIGHT STATUS]" },\n    { "kind": "not-contains", "value": "ERROR" },\n    { "kind": "matches", "value": "Running \\\\d+/\\\\d+ providers" }\n  ]\n}\n\`\`\`\n\n**Assertion kinds:** \`contains\` (substring present), \`not-contains\` (substring absent), \`matches\` (regex hit).\n\n**Dispatch:** POSTs each scenario as a JSON-RPC \`tools/call\` request to the running MCP HTTP server (default \`http://127.0.0.1:31001/mcp\`). Tests the **actual transport path** — the 22e→22f gap (MCP-side Gemini substitute missing) was exactly this kind of "the function worked but the wiring didn't" bug.\n\n**Caveat (v1).** Scenarios that call tools writing to apex.db (history, quota, cache) DO write production rows during test runs — \`__userTest\` gate is a planned follow-up.\n\n**Deviation from MoA verdict.** Verdict picked YAML; this v1 uses JSON to avoid adding a yaml-parsing dependency (Rule 9A trigger). Same diff-friendly committed-file shape.`,
+    {
+      projectRoot: projectRootArg,
+      scenarioFile: z
+        .string()
+        .optional()
+        .describe(
+          "Relative path to a single scenario JSON file (e.g. `.apex/user-tests/wave-22f.json`). Mutually exclusive with running the whole directory.",
+        ),
+      scenarioDir: z
+        .string()
+        .optional()
+        .default(APEX_USER_TEST_CONSTANTS.DEFAULT_SCENARIO_DIR)
+        .describe(
+          `Directory under projectRoot containing scenario .json files (default: ${APEX_USER_TEST_CONSTANTS.DEFAULT_SCENARIO_DIR}). All \`*.json\` files are loaded + run alphabetically. Ignored if \`scenarioFile\` is set.`,
+        ),
+      baseUrl: z
+        .string()
+        .url()
+        .optional()
+        .default(APEX_USER_TEST_CONSTANTS.DEFAULT_MCP_URL)
+        .describe(
+          `Where to POST the JSON-RPC tool-call requests. Defaults to the local MCP HTTP server.`,
+        ),
+      timeoutMs: z
+        .number()
+        .int()
+        .min(1000)
+        .max(600_000)
+        .optional()
+        .default(APEX_USER_TEST_CONSTANTS.DEFAULT_TIMEOUT_MS)
+        .describe(
+          `Per-scenario HTTP timeout. Default ${APEX_USER_TEST_CONSTANTS.DEFAULT_TIMEOUT_MS}ms. Scenarios that exercise apex_synthesize or other LLM-backed tools may need longer than the default.`,
+        ),
+    },
+    async ({ projectRoot, scenarioFile, scenarioDir, baseUrl, timeoutMs }) => {
+      if (!projectRoot) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: withFlushNotice(
+                "apex_user_test: `projectRoot` is required (path-traversal-safe scenario loading needs a confining root).",
+              ),
+            },
+          ],
+        };
+      }
+      // Resolve which scenarios to run: a single file OR an entire directory.
+      const sources: { sourcePath: string }[] = [];
+      if (scenarioFile) {
+        const r = loadScenarioFile(projectRoot, scenarioFile);
+        if (!r.ok) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: withFlushNotice(`apex_user_test: ${r.reason}`),
+              },
+            ],
+          };
+        }
+        sources.push({ sourcePath: scenarioFile });
+      } else {
+        const list = listScenariosInDir(projectRoot, scenarioDir);
+        if (!list.ok) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: withFlushNotice(`apex_user_test: ${list.reason}`),
+              },
+            ],
+          };
+        }
+        if (list.files.length === 0) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: withFlushNotice(
+                  `apex_user_test: no scenario files found under \`${scenarioDir}/\` in \`${projectRoot}\`. Create \`<projectRoot>/${scenarioDir}/<name>.json\` to author one. (See \`apex_user_test\` tool description for the JSON schema.)`,
+                ),
+              },
+            ],
+          };
+        }
+        if (list.files.length > APEX_USER_TEST_CONSTANTS.MAX_SCENARIOS_PER_RUN) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: withFlushNotice(
+                  `apex_user_test: ${list.files.length} scenario files found (max ${APEX_USER_TEST_CONSTANTS.MAX_SCENARIOS_PER_RUN} per run). Move some elsewhere or split into multiple directories.`,
+                ),
+              },
+            ],
+          };
+        }
+        for (const f of list.files) sources.push({ sourcePath: f });
+      }
+      // Run each scenario. Sequential (per the Missions "serial features"
+      // principle — assertions against shared state should not race).
+      const results: ScenarioResult[] = [];
+      for (const src of sources) {
+        const loaded = loadScenarioFile(projectRoot, src.sourcePath);
+        if (!loaded.ok) {
+          results.push({
+            // Synthetic scenario record so the report can still render the failure.
+            scenario: {
+              name: src.sourcePath,
+              tool: "(load-failed)",
+              args: {},
+              assertions: [],
+            },
+            sourcePath: src.sourcePath,
+            ok: false,
+            reason: loaded.reason,
+            latencyMs: 0,
+          });
+          continue;
+        }
+        const r = await runScenario(loaded.scenario, {
+          baseUrl,
+          sourcePath: src.sourcePath,
+          timeoutMs,
+        });
+        results.push(r);
+      }
+      const report = formatUserTestReport(results, { baseUrl });
+      return {
+        content: [{ type: "text", text: withFlushNotice(report) }],
       };
     },
   );

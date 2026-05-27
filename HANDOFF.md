@@ -6,26 +6,29 @@
 
 ## ⏭️ NOW — 2026-05-27
 
-**State.** Branch `main` at `872af58` (Wave 27 SHA-backfill fixup) + this commit on top. Working tree clean apart from an auto-generated `next-env.d.ts` toggle (Next.js build-path noise, unrelated). Resume: `pnpm dev` (http://localhost:3010) · `pnpm mcp:http` · `pnpm qa:check` · `pnpm security:check` · `pnpm test:run`.
+**State.** Branch `main` at `f12308e` (Wave 28a SHA-backfill fixup) + this commit on top. Working tree clean apart from an auto-generated `next-env.d.ts` toggle (Next.js build-path noise, unrelated). Resume: `pnpm dev` (http://localhost:3010) · `pnpm mcp:http` · `pnpm qa:check` · `pnpm security:check` · `pnpm test:run`.
 
 **Shipped today:**
-- **Wave 27** — `/handoff archive`: moved Wave 7-21 + drifted reference subsections into `_archive/HANDOFF-2026-05.md`. HANDOFF.md 471 → 74 lines. INDEX.yaml +1 entry (tier `archived`). (`59f0a66`)
-- **Wave 28a** — **Validation contract** input added to `apex_code_review` / `apex_security_review` / `apex_doc_review`. New `validationContract: Record<string, string>` zod arg (1-20 items, id regex `[A-Za-z][A-Za-z0-9_-]{0,40}`, assertion ≤300 chars). New `src/lib/validation-contract.ts` (~140 LOC) provides `formatValidationContractBlock(contract)` (prepends a `## Validation contract` block to the review prompt) + `formatValidationContractSynthRule(contract)` (appends Rule 10 to the synth's system prompt instructing it to emit a `## Contract status` block grading each id as `[x] satisfied | [ ] violated | [?] not-addressed` via exact-id-token scan of finding bodies). Personas cite by id token; synth scans deterministically. MoA verdict 2026-05-27 confidence 70 (named map shape beat string-array and structured-object alternatives — Claude's recommendation). 24 new tests cover schema validation, id regex constraints, contract block format, synth rule emission. 581/581 tests; qa:check + security:check both clean. (`75805de`)
+- **Wave 28a** — Validation contract input on the 3 MoA review tools. New `validationContract: Record<string, string>` zod arg + `src/lib/validation-contract.ts` (block builder + Rule-10 synth-rule builder). Personas cite by exact id token; synth emits `## Contract status` block grading `[x] satisfied | [ ] violated | [?] not-addressed`. (`75805de`)
+- **Wave 28b** — `apex_user_test` MCP tool (17th). Black-box user-testing validator per the Missions architecture's QA-engineer pattern. Loads JSON scenarios from `.apex/user-tests/*.json` (path-traversal-safe via realpathSync + isInside, same discipline as review-file-loader.ts). For each scenario, POSTs JSON-RPC `tools/call` to the running MCP HTTP server (default `http://127.0.0.1:31001/mcp`), extracts the text response, evaluates `contains` / `not-contains` / `matches` assertions. Returns a markdown report with pass/fail per scenario + per assertion. Handles SSE-format responses (Streamable HTTP variant). New `src/lib/apex-user-test.ts` (~250 LOC) + 31 new tests covering scenario schema validation, all 3 assertion kinds + invalid regex, path-traversal rejection, JSON parse errors, mocked-fetch happy-path and failure modes (HTTP 5xx, ECONNREFUSED, SSE parsing), report formatting (banner + per-scenario details). **Deviation from MoA verdict**: JSON instead of YAML to avoid adding `yaml`/`js-yaml` as a runtime dep (Rule 9A trigger). 612/612 tests; qa:check + security:check both clean. (`(SHA-pending)`)
 
-**Validation contract** (local extension to the kit's NOW-block format — this wave's proof-point of its own feature):
-- [x] `vc-1`: New zod arg appears on all 3 review tools (apex_code_review, apex_security_review, apex_doc_review).
-- [x] `vc-2`: `formatValidationContractBlock` emits empty string when no contract supplied (zero-overhead for trivial calls).
-- [x] `vc-3`: Synth rule defines deterministic "addressed" matching (exact id token, not fuzzy) per the MoA panel's stated concern.
-- [x] `vc-4`: Type-check + 581 tests + qa:check + security:check all clean.
-- [ ] `vc-5`: Live end-to-end smoke against a real review (deferred — requires Wave 28b's `apex_user_test` tool to drive it without the user manually invoking `apex_code_review`).
+**Validation contract** (this wave's proof-point of Wave 28a):
+- [x] `ut-1`: New `apex_user_test` MCP tool registered as #17 in `REGISTERED_TOOL_NAMES`.
+- [x] `ut-2`: Scenarios load via path-traversal-safe loader; null-byte + `../` traversal both rejected.
+- [x] `ut-3`: Three assertion kinds (`contains` / `not-contains` / `matches`) evaluate correctly + report detail on failure.
+- [x] `ut-4`: HTTP errors + connection failures + SSE response parsing all handled cleanly.
+- [x] `ut-5`: Type-check + 612 tests + qa:check + security:check all clean.
+- [ ] `ut-6`: Live end-to-end smoke (deferred — requires authoring a real scenario file under `.apex/user-tests/` + running against the live MCP HTTP server; sample scenario authoring tracked as a follow-up).
+- [ ] `ut-7`: `__userTest` flag to gate apex.db pollution from test runs (deferred — see Open next steps #1).
 
 **Open next steps:**
-1. **Wave 28b** — `apex_user_test` MCP tool (declarative YAML scenarios at `.apex/user-tests/*.yaml`; in-process MCP dispatch with `__userTest` flag to gate apex.db pollution; ~300 LOC).
-2. **Wave 28c** — Per-role model override on review tools (`personaOverrides?: { claude?, openai?, llama?, gemini?, deepseek? }`, each value validated against SYNTHESIZER_OPTIONS catalog; ~80 LOC).
-3. Verify Production-tier on the `gemini-3.5-flash` candidate (GH #35) before bumping `gemini-2.5-flash` in `providers.ts` + `synthesizer-options.ts` + `TRACKED_MODELS`.
-4. Backlog **12c** — disagreement-driven re-fan-out (~120 LOC; needs 2nd-panel UX).
-5. Backlog **12d** — chain-of-verification lite (~150 LOC; claim extract + footnotes).
-6. **Opt-in (PART 4):** `/handoff-init` in any other repo to spread the HANDOFF + INDEX pattern.
+1. `__userTest` flag for apex_user_test — per-request `X-Apex-User-Test: 1` header that history/quota/cache writes skip, so test runs don't pollute apex.db (verdict's notable concern; deferred from 28b for scope). ~50 LOC.
+2. Author a real `.apex/user-tests/wave-22f-substitute-fires.json` scenario as the live proof-point Wave 28b is missing. Drives apex_synthesize with `includeClaude=false` while Gemini is quota-exhausted; asserts the `[PRE-FLIGHT STATUS]` block contains "will attempt substitute via llama-3.1-8b-instant".
+3. **Wave 28c** — Per-role model override on review tools (`personaOverrides?: { claude?, openai?, llama?, gemini?, deepseek? }`, each value validated against SYNTHESIZER_OPTIONS catalog; ~80 LOC).
+4. Verify Production-tier on the `gemini-3.5-flash` candidate (GH #35) before bumping `gemini-2.5-flash` in `providers.ts` + `synthesizer-options.ts` + `TRACKED_MODELS`.
+5. Backlog **12c** — disagreement-driven re-fan-out (~120 LOC; needs 2nd-panel UX).
+6. Backlog **12d** — chain-of-verification lite (~150 LOC; claim extract + footnotes).
+7. **Opt-in (PART 4):** `/handoff-init` in any other repo to spread the HANDOFF + INDEX pattern.
 
 **Parked:** LFM-side validation of Waves 19 + 20 (no new signal yet — needs the other Mac's CC to surface findings via apex_report).
 
@@ -34,6 +37,12 @@
 ## Wave summary
 
 (Past waves preserved below — newest first. Each entry is a one-row table summary, not a prose retelling. Commit SHA is the index into git log for full detail.)
+
+## Wave 28a — validation contract input for the MoA review tools (2026-05-27)
+
+| Wave | What | Commit |
+|---|---|---|
+| 28a | New `validationContract: Record<string, string>` zod arg on apex_code_review / apex_security_review / apex_doc_review. New `src/lib/validation-contract.ts` (~140 LOC) provides `formatValidationContractBlock(contract)` and `formatValidationContractSynthRule(contract)`. Personas cite by exact id token; synth emits `## Contract status` block grading each id as `[x] satisfied | [ ] violated | [?] not-addressed`. Restored the Validation contract field to HANDOFF's NOW block as a local extension to the kit's strict 4-section format (Wave 26 had dropped it). MoA verdict confidence 70 — named-map shape beat string-array and structured-object alternatives. 24 new tests. | `75805de` |
 
 ## Wave 26 — canonicalize HANDOFF to kit format + expand INDEX.yaml (2026-05-27)
 
