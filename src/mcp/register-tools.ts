@@ -351,6 +351,31 @@ const projectRootArg = z
     "Absolute path to your project's root (e.g. \"/Users/.../lfm\"). When set, apex reads <projectRoot>/.apex/context.md and <projectRoot>/.apex/personas/<slot>.md to ground this call in your project's standing context — committed files, not maker-supplied per-call. Strongly recommended for any review of project code. See feedback/README.md for the .apex/ convention.",
   );
 
+// Wave 28c — per-slot model override for the review tools. One optional
+// string per provider slot; each value is a model id passed verbatim
+// to that provider's stream function (e.g. "claude-sonnet-4-6" on the
+// claude slot, "openai/gpt-oss-120b" on the openai slot). The shape
+// matches MoA verdict 2026-05-27 confidence 70 (provider-keyed map
+// over slot-keyed or array shapes). Validation here is intentionally
+// LIGHT — a non-empty string per provider; mismatched provider/model
+// pairs (e.g. "gemini-2.5-flash" on the claude slot) surface as
+// runtime errors from the SDK, not as zod failures, because each
+// provider's model namespace is large and apex doesn't maintain a
+// unified per-provider catalog. Use the same provider family as the
+// slot's default unless you're deliberately experimenting.
+const personaOverridesSchema = z
+  .object({
+    claude: z.string().min(1).optional(),
+    openai: z.string().min(1).optional(),
+    llama: z.string().min(1).optional(),
+    gemini: z.string().min(1).optional(),
+    deepseek: z.string().min(1).optional(),
+  })
+  .optional()
+  .describe(
+    "Optional **per-slot model override** for the panel. Each key is a provider name (claude / openai / llama / gemini / deepseek); each value is a model id passed verbatim to that provider's stream function. Examples: `{ claude: 'claude-sonnet-4-6' }` pins the Claude slot to Sonnet instead of the default Opus; `{ openai: 'openai/gpt-oss-120b' }` pins the GPT slot to gpt-oss-120b. Omitted slots fall back to the provider's primary/fallback ladder. The `FanOutItem.tier` for an overridden slot is `\"override\"` (visible in the per-provider section header of the response). Use to follow the Factory.ai Missions guidance \"validation uses a different provider to avoid training-data bias\" — but stay within the slot's provider family (mismatched provider/model pairs surface as runtime errors from the SDK, not validation failures).",
+  );
+
 // Wave 18d — discovery nudge. When a review tool is called without
 // projectRoot (or with a projectRoot but no .apex/ populated), surface
 // a banner telling the caller to run apex_bootstrap_project + fill in
@@ -584,6 +609,8 @@ async function runFanOut(
     ensembleId?: string;
     context?: string;
     systemPromptByProvider?: Partial<Record<Provider, string>>;
+    // Wave 28c — per-slot model id override threaded through to fanOut().
+    modelOverrides?: Partial<Record<Provider, string>>;
   },
 ): Promise<CollectedAnswer[]> {
   const ensemble = opts.ensembleId ? findEnsemble(opts.ensembleId) : undefined;
@@ -593,6 +620,7 @@ async function runFanOut(
     ...(opts.systemPromptByProvider
       ? { systemPromptByProvider: opts.systemPromptByProvider }
       : {}),
+    ...(opts.modelOverrides ? { modelOverrides: opts.modelOverrides } : {}),
   });
   const filtered = opts.includeClaude
     ? items
@@ -1085,6 +1113,7 @@ export function registerAllTools(server: McpServer): void {
           "Optional caller-attested evidence: data you (the caller) fetched yourself via SQL / CSV / file scan, attached to support the review. Each entry has a `source` (table/file/query) and `rows[]` (the actual data). Personas read this before the artifact and use it to verify mapping/ownership/identity/population claims that would otherwise be inference. Up to 50 rows per source; up to 12000 chars total across all sources (excess truncated). Personas may demand more rows in their findings if 1 row isn't enough.",
         ),
       validationContract: validationContractSchema,
+      personaOverrides: personaOverridesSchema,
       includeClaude: z
         .boolean()
         .default(true)
@@ -1092,7 +1121,7 @@ export function registerAllTools(server: McpServer): void {
           "Include Claude in the fan-out. Default: true. Claude is the business-logic persona in the default panel assignment — disabling it drops the panel's most catch-the-wrong-rule lens. Set false only when running high-throughput batch reviews.",
         ),
     },
-    async ({ code, filePath, focus, language, context, projectRoot, evidence, validationContract, includeClaude }) => {
+    async ({ code, filePath, focus, language, context, projectRoot, evidence, validationContract, personaOverrides, includeClaude }) => {
       // Wave 19b — resolve the artifact: filePath wins when supplied
       // (full-file mode, larger cap, line numbers). Snippet mode is the
       // fallback. At least one MUST be provided.
@@ -1142,6 +1171,7 @@ export function registerAllTools(server: McpServer): void {
       const answers = await runFanOut(reviewPrompt, {
         includeClaude,
         systemPromptByProvider: panel,
+        ...(personaOverrides ? { modelOverrides: personaOverrides } : {}),
       });
       const synthInput: FanOutAnswer[] = answers.map((a) => ({
         provider: a.provider,
@@ -1260,6 +1290,7 @@ export function registerAllTools(server: McpServer): void {
           "Optional caller-attested evidence (see apex_code_review for full schema). Useful for security audits: paste the actual env dump / IAM policy / dep manifest diff / log excerpt so the security persona reasons against real data instead of inferring.",
         ),
       validationContract: validationContractSchema,
+      personaOverrides: personaOverridesSchema,
       includeClaude: z
         .boolean()
         .default(true)
@@ -1267,7 +1298,7 @@ export function registerAllTools(server: McpServer): void {
           "Include Claude in the fan-out. Default: true (quality matters for security work).",
         ),
     },
-    async ({ code, filePath, focus, language, context, projectRoot, evidence, validationContract, includeClaude }) => {
+    async ({ code, filePath, focus, language, context, projectRoot, evidence, validationContract, personaOverrides, includeClaude }) => {
       let artifactBody: string;
       let filePathDisplay: string | undefined;
       if (filePath) {
@@ -1314,6 +1345,7 @@ export function registerAllTools(server: McpServer): void {
       const answers = await runFanOut(reviewPrompt, {
         includeClaude,
         systemPromptByProvider: panel,
+        ...(personaOverrides ? { modelOverrides: personaOverrides } : {}),
       });
       const synthInput: FanOutAnswer[] = answers.map((a) => ({
         provider: a.provider,
@@ -1753,6 +1785,7 @@ export function registerAllTools(server: McpServer): void {
         ),
       projectRoot: projectRootArg,
       validationContract: validationContractSchema,
+      personaOverrides: personaOverridesSchema,
       includeClaude: z
         .boolean()
         .default(true)
@@ -1760,7 +1793,7 @@ export function registerAllTools(server: McpServer): void {
           "Include Claude in the panel. Default: true. Claude owns the `consistency` slot in the default assignment — disabling it drops the contradiction-detection lens.",
         ),
     },
-    async ({ files, filePaths, focus, context, projectRoot, validationContract, includeClaude }) => {
+    async ({ files, filePaths, focus, context, projectRoot, validationContract, personaOverrides, includeClaude }) => {
       // Resolve files: either caller-supplied or read from disk.
       const collectedFiles: DocFile[] = [];
       if (files && files.length > 0) {
@@ -1846,6 +1879,7 @@ export function registerAllTools(server: McpServer): void {
       const answers = await runFanOut(reviewPrompt, {
         includeClaude,
         systemPromptByProvider: panel,
+        ...(personaOverrides ? { modelOverrides: personaOverrides } : {}),
       });
       const synthInput: FanOutAnswer[] = answers.map((a) => ({
         provider: a.provider,

@@ -76,6 +76,17 @@ export type FanOutOptions = {
   // not in the map fall back to the default systemPrompt + role-suffix
   // pipeline.
   systemPromptByProvider?: Partial<Record<Provider, string>>;
+  // Wave 28c — per-provider model id override. When set, that
+  // provider's slot uses the given model id (tier=="override")
+  // instead of the primary/fallback ladder. Used by the persona-panel
+  // review tools to let callers pin a specific model per slot — e.g.
+  // "give the security persona Claude even though the panel default
+  // is GPT for that slot". Validation against a per-provider model
+  // catalog is intentionally NOT done at this layer; mismatched
+  // provider/model pairs surface as runtime errors from the provider's
+  // SDK (the legitimate use is calling a sibling model in the same
+  // provider's family).
+  modelOverrides?: Partial<Record<Provider, string>>;
 };
 
 export type StreamUsage = {
@@ -161,7 +172,7 @@ export function fanOut(prompt: string, opts: FanOutOptions = {}): FanOutItem[] {
   const describePromises = new Map<string, Promise<string>>();
 
   return activeProviders.map((p) => {
-    const { tier, model } = resolveModel(p);
+    const { tier, model } = resolveModel(p, opts.modelOverrides?.[p]);
     const roleId = (opts.roles?.[p] ?? null) as RoleId | null;
     const overridePrompt = opts.systemPromptByProvider?.[p];
     // Wave 18b — when a per-provider override is set, use it verbatim;

@@ -6,29 +6,28 @@
 
 ## ⏭️ NOW — 2026-05-27
 
-**State.** Branch `main` at `f12308e` (Wave 28a SHA-backfill fixup) + this commit on top. Working tree clean apart from an auto-generated `next-env.d.ts` toggle (Next.js build-path noise, unrelated). Resume: `pnpm dev` (http://localhost:3010) · `pnpm mcp:http` · `pnpm qa:check` · `pnpm security:check` · `pnpm test:run`.
+**State.** Branch `main` at `ac0d72d` (Wave 28b SHA-backfill fixup) + this commit on top. Working tree clean apart from an auto-generated `next-env.d.ts` toggle (Next.js build-path noise, unrelated). Resume: `pnpm dev` (http://localhost:3010) · `pnpm mcp:http` · `pnpm qa:check` · `pnpm security:check` · `pnpm test:run`.
 
-**Shipped today:**
-- **Wave 28a** — Validation contract input on the 3 MoA review tools. New `validationContract: Record<string, string>` zod arg + `src/lib/validation-contract.ts` (block builder + Rule-10 synth-rule builder). Personas cite by exact id token; synth emits `## Contract status` block grading `[x] satisfied | [ ] violated | [?] not-addressed`. (`75805de`)
-- **Wave 28b** — `apex_user_test` MCP tool (17th). Black-box user-testing validator per the Missions architecture's QA-engineer pattern. Loads JSON scenarios from `.apex/user-tests/*.json` (path-traversal-safe via realpathSync + isInside, same discipline as review-file-loader.ts). For each scenario, POSTs JSON-RPC `tools/call` to the running MCP HTTP server (default `http://127.0.0.1:31001/mcp`), extracts the text response, evaluates `contains` / `not-contains` / `matches` assertions. Returns a markdown report with pass/fail per scenario + per assertion. Handles SSE-format responses (Streamable HTTP variant). New `src/lib/apex-user-test.ts` (~250 LOC) + 31 new tests covering scenario schema validation, all 3 assertion kinds + invalid regex, path-traversal rejection, JSON parse errors, mocked-fetch happy-path and failure modes (HTTP 5xx, ECONNREFUSED, SSE parsing), report formatting (banner + per-scenario details). **Deviation from MoA verdict**: JSON instead of YAML to avoid adding `yaml`/`js-yaml` as a runtime dep (Rule 9A trigger). 612/612 tests; qa:check + security:check both clean. (`9146217`)
+**Shipped today (Wave 28a+b+c — full trio from the Missions architecture):**
+- **Wave 28a** — Validation contract input on the 3 MoA review tools. (`75805de`)
+- **Wave 28b** — `apex_user_test` MCP tool (17th, black-box user-testing validator with JSON scenarios). (`9146217`)
+- **Wave 28c** — Per-slot model override on the 3 MoA review tools. New `personaOverrides?: { claude?, openai?, llama?, gemini?, deepseek? }` zod arg. Each value is a model id passed verbatim to that provider's stream function (e.g. `{ claude: 'claude-sonnet-4-6' }` pins the claude slot to Sonnet instead of default Opus). Threading: `Tier` type split into `BaseTier` (`primary | fallback`, static config) + `Tier` (adds `"override"`, runtime label). `MODELS` now typed `Record<Provider, Record<BaseTier, string>>` — override models come from caller, not static config. `resolveModel(provider, override?)` checks the override first; `tier="override"` surfaces in `FanOutItem.tier` + `formatAnswers` output. New `FanOutOptions.modelOverrides` field threaded through `runFanOut` → `fanOut` → `resolveModel`. Validation intentionally light (non-empty string per provider) — mismatched provider/model pairs surface as runtime SDK errors, not zod failures. Matches Luke's "validation uses a different provider to avoid training-data bias" guidance, but stays within the slot's provider family by default. 6 new tests cover override-takes-precedence, override-beats-exhaustion, empty-override-treated-as-unset, resolveAll partial-overrides map, backward-compat (no overrides = old behavior). 618/618 tests; qa:check + security:check both clean. (`(SHA-pending)`)
 
-**Validation contract** (this wave's proof-point of Wave 28a):
-- [x] `ut-1`: New `apex_user_test` MCP tool registered as #17 in `REGISTERED_TOOL_NAMES`.
-- [x] `ut-2`: Scenarios load via path-traversal-safe loader; null-byte + `../` traversal both rejected.
-- [x] `ut-3`: Three assertion kinds (`contains` / `not-contains` / `matches`) evaluate correctly + report detail on failure.
-- [x] `ut-4`: HTTP errors + connection failures + SSE response parsing all handled cleanly.
-- [x] `ut-5`: Type-check + 612 tests + qa:check + security:check all clean.
-- [ ] `ut-6`: Live end-to-end smoke (deferred — requires authoring a real scenario file under `.apex/user-tests/` + running against the live MCP HTTP server; sample scenario authoring tracked as a follow-up).
-- [ ] `ut-7`: `__userTest` flag to gate apex.db pollution from test runs (deferred — see Open next steps #1).
+**Validation contract** (Wave 28a proof-point applied to 28c):
+- [x] `po-1`: `personaOverridesSchema` (5 optional provider keys, each min-1 string) registered on apex_code_review + apex_security_review + apex_doc_review.
+- [x] `po-2`: `Tier` split into `BaseTier` + `Tier` so MODELS doesn't require override entries.
+- [x] `po-3`: `resolveModel` checks override first; tier="override" propagates through fanOut → FanOutItem → formatAnswers.
+- [x] `po-4`: `resolveAll(overrides?)` honors a partial overrides map; omitted providers keep primary/fallback behavior.
+- [x] `po-5`: Type-check + 618 tests + qa:check + security:check all clean (no regression in existing tier/quota tests).
+- [ ] `po-6`: Live end-to-end smoke (deferred — same dependency as 28b's `ut-6`; requires authoring a real apex_user_test scenario that exercises a `personaOverrides` call).
 
 **Open next steps:**
-1. `__userTest` flag for apex_user_test — per-request `X-Apex-User-Test: 1` header that history/quota/cache writes skip, so test runs don't pollute apex.db (verdict's notable concern; deferred from 28b for scope). ~50 LOC.
-2. Author a real `.apex/user-tests/wave-22f-substitute-fires.json` scenario as the live proof-point Wave 28b is missing. Drives apex_synthesize with `includeClaude=false` while Gemini is quota-exhausted; asserts the `[PRE-FLIGHT STATUS]` block contains "will attempt substitute via llama-3.1-8b-instant".
-3. **Wave 28c** — Per-role model override on review tools (`personaOverrides?: { claude?, openai?, llama?, gemini?, deepseek? }`, each value validated against SYNTHESIZER_OPTIONS catalog; ~80 LOC).
-4. Verify Production-tier on the `gemini-3.5-flash` candidate (GH #35) before bumping `gemini-2.5-flash` in `providers.ts` + `synthesizer-options.ts` + `TRACKED_MODELS`.
-5. Backlog **12c** — disagreement-driven re-fan-out (~120 LOC; needs 2nd-panel UX).
-6. Backlog **12d** — chain-of-verification lite (~150 LOC; claim extract + footnotes).
-7. **Opt-in (PART 4):** `/handoff-init` in any other repo to spread the HANDOFF + INDEX pattern.
+1. **Wave 29** — `__userTest` flag for apex_user_test: per-request `X-Apex-User-Test: 1` header that history/quota/cache writes skip, so test runs don't pollute apex.db (carried over from 28b's `ut-7`; verdict's notable concern). ~50 LOC.
+2. Author a real `.apex/user-tests/` scenario exercising the new contract+override surface as the live proof-point Wave 28a/b/c are all missing. Two scenarios pair well: (a) `wave-22f-substitute-fires.json` — apex_synthesize with Gemini quota exhausted, asserts PRE-FLIGHT block contains "will attempt substitute"; (b) `wave-28c-override-tier-surfaces.json` — apex_code_review with a `personaOverrides` arg, asserts the response header shows `, override` in the per-provider section title.
+3. Verify Production-tier on the `gemini-3.5-flash` candidate (GH #35) before bumping `gemini-2.5-flash` in `providers.ts` + `synthesizer-options.ts` + `TRACKED_MODELS`.
+4. Backlog **12c** — disagreement-driven re-fan-out (~120 LOC; needs 2nd-panel UX).
+5. Backlog **12d** — chain-of-verification lite (~150 LOC; claim extract + footnotes).
+6. **Opt-in (PART 4):** `/handoff-init` in any other repo to spread the HANDOFF + INDEX pattern.
 
 **Parked:** LFM-side validation of Waves 19 + 20 (no new signal yet — needs the other Mac's CC to surface findings via apex_report).
 
@@ -37,6 +36,12 @@
 ## Wave summary
 
 (Past waves preserved below — newest first. Each entry is a one-row table summary, not a prose retelling. Commit SHA is the index into git log for full detail.)
+
+## Wave 28b — apex_user_test MCP tool (black-box user-testing validator) (2026-05-27)
+
+| Wave | What | Commit |
+|---|---|---|
+| 28b | 17th MCP tool. Loads JSON scenarios from `.apex/user-tests/*.json` (path-traversal-safe, same discipline as review-file-loader.ts). POSTs JSON-RPC `tools/call` to the running MCP HTTP server, evaluates `contains` / `not-contains` / `matches` assertions against the text response, returns a markdown pass/fail report. Handles SSE-variant Streamable HTTP responses. New `src/lib/apex-user-test.ts` (~250 LOC) + 31 tests. Deviation from MoA verdict: JSON not YAML (avoids adding yaml/js-yaml as a runtime dep — Rule 9A trigger). | `9146217` |
 
 ## Wave 28a — validation contract input for the MoA review tools (2026-05-27)
 

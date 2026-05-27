@@ -8,9 +8,16 @@ export const PROVIDERS: readonly Provider[] = [
   "deepseek",
 ] as const;
 
-export type Tier = "primary" | "fallback";
+// Wave 28c — Tier split.
+// - `BaseTier` is the statically configured ladder (primary/fallback).
+// - `Tier` adds the runtime `"override"` label used by `resolveModel`
+//   when a caller pins a model id per slot (see tiers.ts). `MODELS`
+//   only carries the BaseTier entries; override models come from the
+//   caller's `modelOverrides` map, not from this static config.
+export type BaseTier = "primary" | "fallback";
+export type Tier = BaseTier | "override";
 
-export const MODELS: Record<Provider, Record<Tier, string>> = {
+export const MODELS: Record<Provider, Record<BaseTier, string>> = {
   claude: {
     primary: "claude-opus-4-7",
     fallback: "claude-sonnet-4-6",
