@@ -21,16 +21,27 @@ export type BuildDocReviewPromptInput = {
   files: DocFile[];
   focus?: string;
   resolutionReport?: string;
+  /**
+   * Wave 28a — pre-built validation contract block (formatted markdown).
+   * Empty string when caller didn't supply a contract; block when they
+   * did. Goes BEFORE the files so personas read acceptance criteria
+   * first and can cite contract ids in their findings.
+   */
+  contractBlock?: string;
   nonce: string;
 };
 
 export function buildDocReviewPrompt(input: BuildDocReviewPromptInput): string {
-  const { files, focus, resolutionReport, nonce } = input;
+  const { files, focus, resolutionReport, contractBlock, nonce } = input;
   const parts: string[] = [];
 
   parts.push(
     `You are reviewing documentation (Markdown / RST / plain prose). Your assigned failure mode is described in your system prompt — STAY IN YOUR LANE; don't flag findings that another reviewer owns.`,
   );
+
+  if (contractBlock && contractBlock.trim().length > 0) {
+    parts.push(contractBlock.trim());
+  }
 
   if (focus && focus.trim().length > 0) {
     parts.push(`## Caller's focus\n${focus.trim()}`);

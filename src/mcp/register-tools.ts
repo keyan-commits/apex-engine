@@ -74,6 +74,12 @@ import {
   resolveRefs,
 } from "@/lib/doc-review-resolver";
 import {
+  formatValidationContractBlock,
+  formatValidationContractSynthRule,
+  validationContractSchema,
+  type ValidationContract,
+} from "@/lib/validation-contract";
+import {
   buildPreflightStatus,
   formatPreflightBlock,
 } from "@/lib/preflight-status";
@@ -236,6 +242,10 @@ function buildCodeReviewPrompt(args: {
   // evidence was supplied). When non-empty, it goes BEFORE the artifact
   // in the prompt so personas read the evidence first.
   evidenceBlock?: string;
+  // Wave 28a — validation contract block (when caller supplied a
+  // contract). Goes BEFORE the artifact so personas read acceptance
+  // criteria first and cite ids in their findings.
+  contractBlock?: string;
 }): string {
   const language = sanitizeReviewArg(args.language, 60);
   const focusInput = sanitizeReviewArg(args.focus, 400);
@@ -296,6 +306,12 @@ function buildCodeReviewPrompt(args: {
     evidenceRule,
     "",
   ];
+  // Wave 28a — validation contract block goes BEFORE the artifact AND
+  // before evidence — it's the "what done means" frame the personas
+  // anchor their findings against.
+  if (args.contractBlock) {
+    promptParts.push(args.contractBlock, "");
+  }
   // Wave 19c-fast — caller-attested evidence block goes BEFORE the
   // artifact so personas read the supporting data first.
   if (args.evidenceBlock) {
@@ -1059,6 +1075,7 @@ export function registerAllTools(server: McpServer): void {
         .describe(
           "Optional caller-attested evidence: data you (the caller) fetched yourself via SQL / CSV / file scan, attached to support the review. Each entry has a `source` (table/file/query) and `rows[]` (the actual data). Personas read this before the artifact and use it to verify mapping/ownership/identity/population claims that would otherwise be inference. Up to 50 rows per source; up to 12000 chars total across all sources (excess truncated). Personas may demand more rows in their findings if 1 row isn't enough.",
         ),
+      validationContract: validationContractSchema,
       includeClaude: z
         .boolean()
         .default(true)
@@ -1066,7 +1083,7 @@ export function registerAllTools(server: McpServer): void {
           "Include Claude in the fan-out. Default: true. Claude is the business-logic persona in the default panel assignment — disabling it drops the panel's most catch-the-wrong-rule lens. Set false only when running high-throughput batch reviews.",
         ),
     },
-    async ({ code, filePath, focus, language, context, projectRoot, evidence, includeClaude }) => {
+    async ({ code, filePath, focus, language, context, projectRoot, evidence, validationContract, includeClaude }) => {
       // Wave 19b — resolve the artifact: filePath wins when supplied
       // (full-file mode, larger cap, line numbers). Snippet mode is the
       // fallback. At least one MUST be provided.
@@ -1098,6 +1115,9 @@ export function registerAllTools(server: McpServer): void {
       }
       const nonce = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
       const evidenceResult = buildEvidenceBlock(evidence, nonce);
+      const contractBlock = formatValidationContractBlock(
+        validationContract as ValidationContract | undefined,
+      );
       const reviewPrompt = buildCodeReviewPrompt({
         code: artifactBody,
         focus,
@@ -1106,6 +1126,7 @@ export function registerAllTools(server: McpServer): void {
         nonce,
         ...(filePathDisplay ? { filePathDisplay } : {}),
         ...(evidenceResult.block ? { evidenceBlock: evidenceResult.block } : {}),
+        ...(contractBlock ? { contractBlock } : {}),
       });
       const pc = loadProjectContext(projectRoot);
       const panel = buildPanelSystemPrompts(pc, context);
@@ -1134,6 +1155,12 @@ export function registerAllTools(server: McpServer): void {
       const personaLegend = Object.entries(REVIEW_PANEL_ASSIGNMENTS)
         .map(([provider, slot]) => `- ${provider} → ${slot}`)
         .join("\n");
+      // Wave 28a — when the caller supplied a validation contract, append
+      // Rule 10 (grade-against-contract) to the synth's system prompt.
+      // Returns empty string when no contract; harmless filter-Boolean.
+      const contractSynthRule = formatValidationContractSynthRule(
+        validationContract as ValidationContract | undefined,
+      );
       const synthSystemPrompt = [
         projectBlock,
         sanitizedCaller
@@ -1142,6 +1169,7 @@ export function registerAllTools(server: McpServer): void {
         `[PERSONA PANEL ASSIGNMENTS]\n${personaLegend}\n[END PERSONA PANEL ASSIGNMENTS]`,
         panelStatusBlock,
         CODE_REVIEW_SYNTH_SYSTEM_PROMPT,
+        contractSynthRule,
       ]
         .filter(Boolean)
         .join("\n\n");
@@ -1222,6 +1250,7 @@ export function registerAllTools(server: McpServer): void {
         .describe(
           "Optional caller-attested evidence (see apex_code_review for full schema). Useful for security audits: paste the actual env dump / IAM policy / dep manifest diff / log excerpt so the security persona reasons against real data instead of inferring.",
         ),
+      validationContract: validationContractSchema,
       includeClaude: z
         .boolean()
         .default(true)
@@ -1229,7 +1258,7 @@ export function registerAllTools(server: McpServer): void {
           "Include Claude in the fan-out. Default: true (quality matters for security work).",
         ),
     },
-    async ({ code, filePath, focus, language, context, projectRoot, evidence, includeClaude }) => {
+    async ({ code, filePath, focus, language, context, projectRoot, evidence, validationContract, includeClaude }) => {
       let artifactBody: string;
       let filePathDisplay: string | undefined;
       if (filePath) {
@@ -1258,6 +1287,9 @@ export function registerAllTools(server: McpServer): void {
       }
       const nonce = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
       const evidenceResult = buildEvidenceBlock(evidence, nonce);
+      const contractBlock = formatValidationContractBlock(
+        validationContract as ValidationContract | undefined,
+      );
       const reviewPrompt = buildCodeReviewPrompt({
         code: artifactBody,
         focus,
@@ -1266,6 +1298,7 @@ export function registerAllTools(server: McpServer): void {
         nonce,
         ...(filePathDisplay ? { filePathDisplay } : {}),
         ...(evidenceResult.block ? { evidenceBlock: evidenceResult.block } : {}),
+        ...(contractBlock ? { contractBlock } : {}),
       });
       const pc = loadProjectContext(projectRoot);
       const panel = buildPanelSystemPrompts(pc, context);
@@ -1288,6 +1321,10 @@ export function registerAllTools(server: McpServer): void {
       const personaLegend = Object.entries(REVIEW_PANEL_ASSIGNMENTS)
         .map(([provider, slot]) => `- ${provider} → ${slot}`)
         .join("\n");
+      // Wave 28a — grade-against-contract synth rule (when caller supplied a contract).
+      const contractSynthRule = formatValidationContractSynthRule(
+        validationContract as ValidationContract | undefined,
+      );
       const synthSystemPrompt = [
         projectBlock,
         sanitizedCaller
@@ -1296,6 +1333,7 @@ export function registerAllTools(server: McpServer): void {
         `[PERSONA PANEL ASSIGNMENTS]\n${personaLegend}\n[END PERSONA PANEL ASSIGNMENTS]`,
         panelStatusBlock,
         CODE_REVIEW_SYNTH_SYSTEM_PROMPT,
+        contractSynthRule,
       ]
         .filter(Boolean)
         .join("\n\n");
@@ -1705,6 +1743,7 @@ export function registerAllTools(server: McpServer): void {
           "Ephemeral per-call context. Same trust tier as apex_code_review's `context` — directive-shaped lines are stripped, capped at 2000 chars. Use durable project context via `.apex/context.md` instead when possible.",
         ),
       projectRoot: projectRootArg,
+      validationContract: validationContractSchema,
       includeClaude: z
         .boolean()
         .default(true)
@@ -1712,7 +1751,7 @@ export function registerAllTools(server: McpServer): void {
           "Include Claude in the panel. Default: true. Claude owns the `consistency` slot in the default assignment — disabling it drops the contradiction-detection lens.",
         ),
     },
-    async ({ files, filePaths, focus, context, projectRoot, includeClaude }) => {
+    async ({ files, filePaths, focus, context, projectRoot, validationContract, includeClaude }) => {
       // Resolve files: either caller-supplied or read from disk.
       const collectedFiles: DocFile[] = [];
       if (files && files.length > 0) {
@@ -1781,11 +1820,15 @@ export function registerAllTools(server: McpServer): void {
       }
 
       const nonce = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
+      const contractBlock = formatValidationContractBlock(
+        validationContract as ValidationContract | undefined,
+      );
       const reviewPrompt = buildDocReviewPrompt({
         files: collectedFiles,
         nonce,
         ...(focus ? { focus } : {}),
         ...(resolutionReport ? { resolutionReport } : {}),
+        ...(contractBlock ? { contractBlock } : {}),
       });
 
       const sanitizedCaller = sanitizeContextBlock(context);
@@ -1806,6 +1849,10 @@ export function registerAllTools(server: McpServer): void {
       const personaLegend = Object.entries(DOC_REVIEW_PANEL_ASSIGNMENTS)
         .map(([provider, slot]) => `- ${provider} → ${slot}`)
         .join("\n");
+      // Wave 28a — grade-against-contract synth rule (only when caller supplied a contract).
+      const contractSynthRule = formatValidationContractSynthRule(
+        validationContract as ValidationContract | undefined,
+      );
       const synthSystemPrompt = [
         sanitizedCaller
           ? `[Context from calling session]\n${sanitizedCaller}\n[End context]`
@@ -1813,6 +1860,7 @@ export function registerAllTools(server: McpServer): void {
         `[PERSONA PANEL ASSIGNMENTS]\n${personaLegend}\n[END PERSONA PANEL ASSIGNMENTS]`,
         panelStatusBlock,
         DOC_REVIEW_SYNTH_SYSTEM_PROMPT,
+        contractSynthRule,
       ]
         .filter(Boolean)
         .join("\n\n");

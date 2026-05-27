@@ -6,19 +6,26 @@
 
 ## ⏭️ NOW — 2026-05-27
 
-**State.** Branch `main` at `59f0a66` (Wave 27 archive) + this fixup on top. Working tree clean apart from an auto-generated `next-env.d.ts` toggle (Next.js build-path noise, unrelated). Resume: `pnpm dev` (http://localhost:3010) · `pnpm mcp:http` · `pnpm qa:check` · `pnpm security:check` · `pnpm test:run`.
+**State.** Branch `main` at `872af58` (Wave 27 SHA-backfill fixup) + this commit on top. Working tree clean apart from an auto-generated `next-env.d.ts` toggle (Next.js build-path noise, unrelated). Resume: `pnpm dev` (http://localhost:3010) · `pnpm mcp:http` · `pnpm qa:check` · `pnpm security:check` · `pnpm test:run`.
 
 **Shipped today:**
-- **Wave 24** — Factory.ai Missions-inspired HANDOFF schema adopted; bootstrapped `~/Study/claude-handoff` kit (merged `~/.claude/CLAUDE.md` + `/handoff` + `/handoff-init` skills + SessionStart nudge hook). Reconcile diff confirmed the merged CLAUDE.md is a strict superset of the original 9-rule pipeline + Rule 2A scope-tiering + Phase 4.5 DOGFOOD + Rule 9A shape-approval. Post-restart, fully active. (`6b1a21b`)
-- **Wave 25** — `/handoff-init` scaffold installed in apex-engine (PART 3 opt-in). 6 helper scripts + pre-commit hook copied into `scripts/`. **Preserved existing apex post-commit qa hook** by copying it to `scripts/git-hooks/` before flipping `core.hooksPath`. Both hooks now fire under the new hooks path. (`c242a99`)
-- **Wave 26** — canonicalized HANDOFF top heading from `## Now — Wave NN: ...` to `## ⏭️ NOW — <date>` per the kit's `/handoff` skill format (State / Shipped today / Open next steps / Parked); expanded `INDEX.yaml` from 1 → 4 entries (HANDOFF.md, README.md, CLAUDE.md, feedback/README.md); replaced the Wave-24 Convention footer with a slim pointer to the kit. Clears the per-commit "top block isn't dated today" nudge. (`1865b80`)
-- **Wave 27** — `/handoff archive`: moved Wave 7-21 session blocks + the drifted reference sub-sections (Filing-conventions awareness pass / Triage ops trio / Backlog Wave 12c-12d / Pitfalls / Resume-from-clean-state commands / What's in apex-engine today / Engineering decisions / File layout / Commands) into `_archive/HANDOFF-2026-05.md` with an "archived; historical, not authoritative" banner. HANDOFF.md shrank 471 → 74 lines, `##` blocks 28 → 7. `INDEX.yaml` gained a 5th entry for the archive (tier `archived`). Clears the `## blocks live` nudge. (`59f0a66`)
+- **Wave 27** — `/handoff archive`: moved Wave 7-21 + drifted reference subsections into `_archive/HANDOFF-2026-05.md`. HANDOFF.md 471 → 74 lines. INDEX.yaml +1 entry (tier `archived`). (`59f0a66`)
+- **Wave 28a** — **Validation contract** input added to `apex_code_review` / `apex_security_review` / `apex_doc_review`. New `validationContract: Record<string, string>` zod arg (1-20 items, id regex `[A-Za-z][A-Za-z0-9_-]{0,40}`, assertion ≤300 chars). New `src/lib/validation-contract.ts` (~140 LOC) provides `formatValidationContractBlock(contract)` (prepends a `## Validation contract` block to the review prompt) + `formatValidationContractSynthRule(contract)` (appends Rule 10 to the synth's system prompt instructing it to emit a `## Contract status` block grading each id as `[x] satisfied | [ ] violated | [?] not-addressed` via exact-id-token scan of finding bodies). Personas cite by id token; synth scans deterministically. MoA verdict 2026-05-27 confidence 70 (named map shape beat string-array and structured-object alternatives — Claude's recommendation). 24 new tests cover schema validation, id regex constraints, contract block format, synth rule emission. 581/581 tests; qa:check + security:check both clean. (`(SHA-pending)`)
+
+**Validation contract** (local extension to the kit's NOW-block format — this wave's proof-point of its own feature):
+- [x] `vc-1`: New zod arg appears on all 3 review tools (apex_code_review, apex_security_review, apex_doc_review).
+- [x] `vc-2`: `formatValidationContractBlock` emits empty string when no contract supplied (zero-overhead for trivial calls).
+- [x] `vc-3`: Synth rule defines deterministic "addressed" matching (exact id token, not fuzzy) per the MoA panel's stated concern.
+- [x] `vc-4`: Type-check + 581 tests + qa:check + security:check all clean.
+- [ ] `vc-5`: Live end-to-end smoke against a real review (deferred — requires Wave 28b's `apex_user_test` tool to drive it without the user manually invoking `apex_code_review`).
 
 **Open next steps:**
-1. Verify Production-tier on the `gemini-3.5-flash` candidate (GH #35) before bumping `gemini-2.5-flash` in `providers.ts` + `synthesizer-options.ts` + `TRACKED_MODELS` (catalog-check.ts).
-2. Backlog **12c** — disagreement-driven re-fan-out (~120 LOC; needs 2nd-panel UX).
-3. Backlog **12d** — chain-of-verification lite (~150 LOC; claim extract + footnotes).
-4. **Opt-in (PART 4):** `/handoff-init` in any other repo to spread the HANDOFF + INDEX pattern.
+1. **Wave 28b** — `apex_user_test` MCP tool (declarative YAML scenarios at `.apex/user-tests/*.yaml`; in-process MCP dispatch with `__userTest` flag to gate apex.db pollution; ~300 LOC).
+2. **Wave 28c** — Per-role model override on review tools (`personaOverrides?: { claude?, openai?, llama?, gemini?, deepseek? }`, each value validated against SYNTHESIZER_OPTIONS catalog; ~80 LOC).
+3. Verify Production-tier on the `gemini-3.5-flash` candidate (GH #35) before bumping `gemini-2.5-flash` in `providers.ts` + `synthesizer-options.ts` + `TRACKED_MODELS`.
+4. Backlog **12c** — disagreement-driven re-fan-out (~120 LOC; needs 2nd-panel UX).
+5. Backlog **12d** — chain-of-verification lite (~150 LOC; claim extract + footnotes).
+6. **Opt-in (PART 4):** `/handoff-init` in any other repo to spread the HANDOFF + INDEX pattern.
 
 **Parked:** LFM-side validation of Waves 19 + 20 (no new signal yet — needs the other Mac's CC to surface findings via apex_report).
 
@@ -27,6 +34,12 @@
 ## Wave summary
 
 (Past waves preserved below — newest first. Each entry is a one-row table summary, not a prose retelling. Commit SHA is the index into git log for full detail.)
+
+## Wave 26 — canonicalize HANDOFF to kit format + expand INDEX.yaml (2026-05-27)
+
+| Wave | What | Commit |
+|---|---|---|
+| 26 | Renamed top heading from `## Now — Wave NN: ...` to `## ⏭️ NOW — <date>` per kit `/handoff` skill format; folded `## Next` / `## Blockers` / `## Resume` into the NOW block (State / Shipped today / Open next steps / Parked). Expanded `INDEX.yaml` from 1 → 4 entries. Replaced apex-local Convention footer with a slim pointer to the three kit source-of-truth files. Cleared the per-commit "top block isn't dated today" nudge. | `1865b80` |
 
 ## Wave 25 — install handoff-init scaffold (2026-05-27)
 
