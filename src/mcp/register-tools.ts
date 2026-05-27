@@ -43,6 +43,12 @@ import {
 } from "@/lib/review-file-loader";
 import { loadSources, findSource } from "@/lib/apex-sources";
 import { querySource, formatQueryResult } from "@/lib/apex-source-query";
+import {
+  APEX_READ_SOURCE_CONSTANTS,
+  listSourceDir,
+  readSourceFile,
+  treeSourceDir,
+} from "@/lib/apex-read-source";
 
 // Shared MCP tool registration — called by BOTH the stdio entry point
 // (src/mcp/server.ts) and the HTTP entry point (src/mcp/http-server.ts).
@@ -67,6 +73,7 @@ export const REGISTERED_TOOL_NAMES = [
   "apex_bootstrap_project",
   "apex_query_source",
   "apex_web_fetch",
+  "apex_read_source",
 ];
 
 const CODE_REVIEW_MAX_CHARS = 8_000;
@@ -1476,6 +1483,46 @@ export function registerAllTools(server: McpServer): void {
         content: [
           { type: "text", text: withFlushNotice(lines.join("\n")) },
         ],
+      };
+    },
+  );
+
+  server.tool(
+    "apex_read_source",
+    `**Read a file, list a directory, or show a directory tree from a project's working tree.** Wave 22b — LFM #31. Symmetric to apex_query_source (which targets declared SQLite/CSV data sources); this one targets SOURCE FILES — TypeScript, Python, Markdown, config, etc.\n\n**Modes:**\n- \`read\` — return one file's contents with line numbers prepended. Cap: ${REVIEW_FILE_MODE_MAX_CHARS} chars (reuse review-file-loader's cap).\n- \`list\` — return a one-level directory listing as a Markdown list. Cap: ${APEX_READ_SOURCE_CONSTANTS.LIST_ENTRY_CAP} entries.\n- \`tree\` — return a recursive directory tree. Default depth ${APEX_READ_SOURCE_CONSTANTS.TREE_DEFAULT_DEPTH}, hard cap ${APEX_READ_SOURCE_CONSTANTS.TREE_MAX_DEPTH}. Same ${APEX_READ_SOURCE_CONSTANTS.LIST_ENTRY_CAP}-entry total cap.\n\n**Total response cap: ${APEX_READ_SOURCE_CONSTANTS.TOTAL_RESPONSE_CAP} chars** across all modes — apex truncates with a footer rather than emit a 100KB blob into the caller's context window.\n\n**Security**: \`path\` is resolved against \`projectRoot\` via realpathSync + isInside confinement (same discipline as apex_code_review's file loader). Symlinks resolve to their target and the target must stay inside projectRoot. Denylisted segments (\`node_modules\`, \`.git\`, \`.next\`, \`.turbo\`, \`.vercel\`, \`build\`, \`dist\`, \`out\`, \`coverage\`, \`data\`, plus any segment starting with \`.env\`) are rejected — both the input path AND any child entries during list/tree are filtered.\n\nUse this when:\n- A persona needs to verify a claim against ONE specific source file (read mode).\n- An LFM/agent needs to orient itself in an unfamiliar codebase (tree mode, root path, depth 2).\n- The caller wants to find the right file before paying for the larger apex_code_review (list mode on a directory, pick the file, then code-review it).`,
+    {
+      projectRoot: projectRootArg,
+      mode: z
+        .enum(["read", "list", "tree"])
+        .default("read")
+        .describe("`read` for a single file; `list` for a one-level dir listing; `tree` for a recursive tree (default depth 2)."),
+      path: z
+        .string()
+        .min(1)
+        .describe("Relative path under projectRoot (e.g. `src/lib/engine.ts`, `src/components/`). Required."),
+      maxDepth: z
+        .number()
+        .int()
+        .min(1)
+        .max(APEX_READ_SOURCE_CONSTANTS.TREE_MAX_DEPTH)
+        .optional()
+        .describe(`Only used in \`tree\` mode. Default ${APEX_READ_SOURCE_CONSTANTS.TREE_DEFAULT_DEPTH}, hard cap ${APEX_READ_SOURCE_CONSTANTS.TREE_MAX_DEPTH}.`),
+    },
+    async ({ projectRoot, mode, path, maxDepth }) => {
+      const root = projectRoot ?? process.cwd();
+      let result;
+      if (mode === "read") {
+        result = readSourceFile(root, path);
+      } else if (mode === "list") {
+        result = listSourceDir(root, path);
+      } else {
+        result = treeSourceDir(root, path, maxDepth ?? APEX_READ_SOURCE_CONSTANTS.TREE_DEFAULT_DEPTH);
+      }
+      const text = result.ok
+        ? result.text
+        : `apex_read_source (${mode}) failed: ${result.reason}`;
+      return {
+        content: [{ type: "text", text: withFlushNotice(text) }],
       };
     },
   );
