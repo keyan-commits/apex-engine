@@ -1,0 +1,4 @@
+# handoff-init marker — this repo uses the global HANDOFF/INDEX convention (~/.claude/CLAUDE.md).
+# A re-run of /handoff-init sees this and reports "already initialized" instead of redoing setup.
+version: 1
+initialized: 2026-05-27

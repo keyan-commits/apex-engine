@@ -1,0 +1,44 @@
+#!/bin/sh
+# Pre-commit: REQUIRE a HANDOFF update each commit, then regenerate INDEX.md + validate.
+# Installed by /handoff-init via: git config core.hooksPath scripts/git-hooks
+# Bypass once with: git commit --no-verify
+root="$(git rev-parse --show-toplevel)"
+
+# --- Enforce: every commit must update HANDOFF.md (its NOW block reflects this work) ---
+# Disable in a repo with:  git config handoff.requireOnCommit false
+if [ "$(git config --bool handoff.requireOnCommit 2>/dev/null || echo true)" = "true" ] && [ -f "$root/HANDOFF.md" ]; then
+  if ! git diff --cached --name-only | grep -qx "HANDOFF.md"; then
+    echo "pre-commit: this commit doesn't touch HANDOFF.md." >&2
+    echo "  Refresh the NOW block to reflect this work (run /handoff), stage it, re-commit." >&2
+    echo "  Bypass once: git commit --no-verify   |   Disable here: git config handoff.requireOnCommit false" >&2
+    exit 1
+  fi
+fi
+
+# --- Memory store (opt-in): mirror Claude Code's auto-memory into ./memory, then validate ---
+# Mirroring is OFF by default (a repo shouldn't auto-commit your private notes).
+# Turn it on per repo with:  git config handoff.syncMemory true
+if [ "$(git config --bool handoff.syncMemory 2>/dev/null || echo false)" = "true" ] && [ -f "$root/scripts/sync_memory.sh" ]; then
+  sh "$root/scripts/sync_memory.sh" || exit 1
+fi
+# Validate a memory/ store if the repo has one (no-op otherwise). Errors block;
+# index drift + dangling [[wikilinks]] print as non-blocking nudges.
+if [ -d "$root/memory" ] && [ -f "$root/scripts/memory_lint.py" ]; then
+  python3 "$root/scripts/memory_lint.py" || {
+    echo "pre-commit: memory_lint failed — fix the errors above or use --no-verify." >&2
+    exit 1
+  }
+fi
+
+# --- Non-blocking freshness nudge (date / block-count) ---
+sh "$root/scripts/check_handoff_fresh.sh" || true
+
+# --- Regenerate the human index from INDEX.yaml + validate ---
+if [ -f "$root/INDEX.yaml" ]; then
+  python3 "$root/scripts/generate_index_md.py" || exit 1
+  [ -f "$root/INDEX.md" ] && git add "$root/INDEX.md"
+  python3 "$root/scripts/validate_index.py" || {
+    echo "pre-commit: INDEX.yaml validation failed — fix the errors above or use --no-verify." >&2
+    exit 1
+  }
+fi

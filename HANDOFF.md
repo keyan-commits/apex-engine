@@ -2,45 +2,52 @@
 
 > Resume card — read first. Volatile state only; `CLAUDE.md` is stable architecture, git log is the full changelog. No prose restatement of diffs here.
 
-**Updated:** 2026-05-28 (night — post-restart, fully active)
+**Updated:** 2026-05-27
 
-## Now — Wave 24: adopt structured HANDOFF schema (Factory.ai Missions)
+## Now — Wave 25: install handoff-init scaffold (PART 3 from setup — opt-in adopted)
 
 **Completed:**
-- Replaced prose `Last action` + chained `Earlier today` blocks with the structured 5-field shape (Completed / Left undone / Commands run / Issues discovered / Validation contract).
-- Past Wave-summary tables (23 → 7 + earlier sections) preserved below — new waves collapse into one-row entries there.
-- Convention footer rewritten to document the schema + Rule 2A tiering + SHA-backfill discipline.
-- Installed shared `~/Study/claude-handoff` kit on this Mac via `bootstrap.sh` (symlink mode): merged CLAUDE.md, `/handoff` + `/handoff-init` skills, SessionStart nudge hook. Reconcile diff confirmed the merged CLAUDE.md is a strict superset of the original 9-rule pipeline + adds Rule 2A scope-tiering + Phase 4.5 DOGFOOD + Rule 9A shape-approval. Backup at `~/.claude/.handoff-backup-20260527-110026/`.
-- Wave 24 SHA-backfill landed as a single fixup commit `1c344f2` — proof-points the new convention's "one fixup, never a trail" rule.
+- Ran `/handoff-init` inside apex-engine (non-destructive). 6 helper scripts copied into `scripts/`: `validate_index.py`, `generate_index_md.py`, `check_handoff_fresh.sh`, `memory_lint.py`, `memory_recall.py`, `sync_memory.sh`. Pre-commit hook copied to `scripts/git-hooks/pre-commit`. `.handoff-init` marker (`version: 1`, `initialized: 2026-05-27`) dropped at repo root.
+- **Preserved existing apex post-commit hook.** apex-engine had `.git/hooks/post-commit` (installed by `pnpm qa:install-hooks` — runs qa:check + security:check in background after every commit, surfaces regressions via the feedback channel). Without action, flipping `core.hooksPath` would orphan it. Copied to `scripts/git-hooks/post-commit` BEFORE the flip; both hooks now active under the new hooks path.
+- Seeded `INDEX.yaml` with 1 starter entry (HANDOFF.md) from the kit template; generated `INDEX.md`. Validation: `✓ INDEX.yaml OK — 1 entries, all paths exist, no leaked figures`.
+- Wired `git config core.hooksPath scripts/git-hooks`.
+- HANDOFF.md and pre-existing apex scripts (`qa-check.ts`, `security-check.ts`, etc.) NOT touched.
 
-**Left undone:** (none — pure schema adoption; the CC restart is a user action, not deferred work)
+**Left undone:**
+- Populate `INDEX.yaml` with the rest of apex's root docs (README.md, CLAUDE.md, feedback/README.md). Reverse-coverage warning is non-blocking but worth tightening.
+- Canonicalize HANDOFF.md heading format from `## Now — Wave NN: ...` to `## ⏭️ NOW — <date>` per the kit's spec (what `check_handoff_fresh.sh` looks for). Recommendation: run `/handoff` once.
 
 **Commands run:**
-- `gh auth status` → ok (`keyan-commits`)
-- `gh repo clone keyan-commits/claude-handoff ~/Study/claude-handoff` → exit 0
-- `cd ~/Study/claude-handoff && ./bootstrap.sh` → exit 0
-- `diff ~/.claude/.handoff-backup-*/CLAUDE.md ~/.claude/CLAUDE.md` → expected restructure; semantic-superset spot-check passed (Rule 4 plan-format headings, 4 investigation subagents, 5 shorthand overrides, Agent Team Config all present in merged)
-- `git pull --ff-only` → already up to date
-- `git commit` (wave) → `6b1a21b` · `git push` → exit 0
-- `git commit` (SHA-backfill fixup) → `1c344f2` · `git push` → exit 0
+- `git rev-parse --show-toplevel` → `/Users/nikoe/Development/Study/apex-engine`
+- `mkdir -p scripts/git-hooks && cp ~/.claude/skills/handoff-init/scripts/*.{py,sh} scripts/ && cp …/scripts/git-hooks/pre-commit scripts/git-hooks/` → exit 0
+- `cp .git/hooks/post-commit scripts/git-hooks/post-commit` (preserve apex qa hook) → exit 0
+- `python3 scripts/generate_index_md.py` → `INDEX.md regenerated.`
+- `python3 scripts/validate_index.py` → `✓ INDEX.yaml OK — 1 entries`
+- `git config core.hooksPath scripts/git-hooks` → exit 0
+- `git commit` → `(SHA-pending)` · `git push` → `(SHA-pending)`
 
-**Issues discovered (out of scope):** (none)
+**Issues discovered (out of scope):** (none — clean scaffold install)
 
 **Validation contract:**
-- [x] HANDOFF top is the new 5-field block, not the prose chain.
-- [x] Wave-summary tables for past waves preserved verbatim.
-- [x] Convention footer documents schema + Rule 2A tiering + SHA-backfill rule.
-- [x] `~/.claude/CLAUDE.md` reconcile passes (merged is a superset of original).
-- [x] SHA-backfill proof-point: exactly one fixup commit (`1c344f2`), no "patch Wave NN SHA" trail.
-- [x] **Post-restart verification:** CC restarted; SessionStart nudge fired (NOW block surfaced at session start); `~/.claude/CLAUDE.md` confirmed symlinked → `~/Study/claude-handoff/assets/CLAUDE.md`; `~/.claude/skills/handoff/` + `~/.claude/skills/handoff-init/` symlinked to the kit with `SKILL.md` files present.
+- [x] All 6 handoff helper scripts present in `scripts/`
+- [x] `scripts/git-hooks/pre-commit` installed (handoff guard)
+- [x] `scripts/git-hooks/post-commit` installed (apex qa, preserved from `.git/hooks/`)
+- [x] `INDEX.yaml` seeded + `INDEX.md` generated + validation passes
+- [x] `core.hooksPath` = `scripts/git-hooks`
+- [x] `.handoff-init` marker present
+- [x] HANDOFF.md preserved (existing content untouched per skill's non-destructive contract)
+- [x] Existing apex post-commit qa hook still fires under the new hooks path
+- [ ] `/handoff` run to canonicalize NOW heading format (deferred — pure formatting, non-blocking)
+- [ ] INDEX.yaml expanded to cover README.md / CLAUDE.md / feedback/README.md (deferred — warning only)
 
 ## Next
 
-1. Verify Production-tier on the `gemini-3.5-flash` candidate (GH #35) before bumping `gemini-2.5-flash` in `providers.ts` + `synthesizer-options.ts`. Re-check `ai.google.dev/gemini-api/docs/models` first.
-2. Backlog **12c** — disagreement-driven re-fan-out (~120 LOC; needs 2nd-panel UX).
-3. Backlog **12d** — chain-of-verification lite (~150 LOC; claim extract + footnotes).
-4. **Opt-in (PART 3 from the other CC's setup instructions):** `/handoff-init` inside apex-engine to install the pre-commit guardrail that REQUIRES every commit to touch `HANDOFF.md` (matches our every-wave cadence). Non-destructive; toggle off with `git config handoff.requireOnCommit false`.
-5. **Opt-in (PART 4):** `/handoff-init` in any other repo to spread the HANDOFF + INDEX pattern. Reports "already initialized" if re-run.
+1. Run `/handoff` once to convert `## Now — Wave NN: ...` headings to the canonical `## ⏭️ NOW — <date>` shape (what `check_handoff_fresh.sh` matches against).
+2. Expand `INDEX.yaml` to cover the other root docs (README.md, CLAUDE.md, feedback/README.md).
+3. Verify Production-tier on the `gemini-3.5-flash` candidate (GH #35) before bumping `gemini-2.5-flash` in `providers.ts` + `synthesizer-options.ts`. Re-check `ai.google.dev/gemini-api/docs/models` first.
+4. Backlog **12c** — disagreement-driven re-fan-out (~120 LOC; needs 2nd-panel UX).
+5. Backlog **12d** — chain-of-verification lite (~150 LOC; claim extract + footnotes).
+6. **Opt-in (PART 4):** `/handoff-init` in any other repo to spread the HANDOFF + INDEX pattern. Reports "already initialized" if re-run.
 
 ## Blockers
 
@@ -55,6 +62,12 @@
 ## Wave summary
 
 (Past waves preserved below — newest first. Each entry is a one-row table summary, not a prose retelling. Commit SHA is the index into git log for full detail.)
+
+## Wave 24 — adopt structured HANDOFF schema (Factory.ai Missions) (2026-05-28)
+
+| Wave | What | Commit |
+|---|---|---|
+| 24 | Adopted Factory.ai Missions structured HANDOFF schema. Replaced prose `Last action` + chained `Earlier today` blocks with the 5-field per-wave shape (Completed / Left undone / Commands run / Issues discovered / Validation contract) + `Next` / `Blockers` / `Resume`. Convention footer documents schema + Rule 2A tiering + SHA-backfill rule. Schema lives in `~/.claude/CLAUDE.md` via shared `claude-handoff` kit at `~/Study/claude-handoff` — bootstrap symlinked merged CLAUDE.md (strict superset of original 9-rule pipeline + Rule 2A scope-tiering + Phase 4.5 DOGFOOD + Rule 9A shape-approval), `/handoff` + `/handoff-init` skills, SessionStart nudge hook. Single SHA-backfill fixup (`1c344f2`) proof-pointed the "one fixup, never a trail" rule. Post-restart verification: nudge fires, symlinks active. | `6b1a21b` |
 
 ## Wave 23 — provider catalog drift detector (2026-05-28)
 

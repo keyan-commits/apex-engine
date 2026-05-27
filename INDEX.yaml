@@ -1,0 +1,23 @@
+# INDEX.yaml — machine-readable doc index (single source of truth).
+# Load this to map "what do I need?" -> exact path. INDEX.md is generated from it.
+# RULE: entries DESCRIBE docs; never reproduce sensitive content (names, $/money, secrets).
+#
+# Per entry:
+#   path           (required) repo-relative file or folder
+#   purpose        (required) one-line, non-leaking summary
+#   topics         (required) keyword tags  e.g. [setup, api, auth]
+#   doc_type       (required) entry|specification|reference|analysis|planning|log|index|guide
+#   authority_tier (required) entry|authoritative|reference|working|planning|meta|historical|log|archived
+#   last_updated   (recommended) YYYY-MM-DD
+#   read_this_when (optional) scenario triggers
+#   related_files  (optional) other paths
+
+documents:
+  - path: HANDOFF.md
+    purpose: What's in flight right now + recent session log.
+    topics: [handoff, log, in-flight]
+    doc_type: log
+    authority_tier: log
+    last_updated: 2026-05-27
+    read_this_when:
+      - resuming work — read the top NOW block first

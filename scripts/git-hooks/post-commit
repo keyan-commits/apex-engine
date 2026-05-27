@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -u
+# >>> apex-engine post-commit hook (managed; edits will be overwritten) >>>
+# Runs QA + security checks in the background after every commit. Output
+# lands in data/logs/post-commit-<timestamp>.log. Never blocks the
+# commit; surfaces regressions via the apex-engine feedback channel.
+APEX_REPO="$(cd "$(dirname "$0")/../.." && pwd)"
+APEX_LOG_DIR="$APEX_REPO/data/logs"
+mkdir -p "$APEX_LOG_DIR"
+APEX_LOG_FILE="$APEX_LOG_DIR/post-commit-$(date -u +%Y%m%dT%H%M%SZ).log"
+(
+  cd "$APEX_REPO"
+  echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] apex-engine post-commit gate starting (commit $(git rev-parse --short HEAD))"
+  APEX_QA_SKIP_BUILD=1 pnpm --silent qa:check
+  pnpm --silent security:check
+  echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] apex-engine post-commit gate finished"
+) >>"$APEX_LOG_FILE" 2>&1 &
+# <<< apex-engine post-commit hook <<<
