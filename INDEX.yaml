@@ -43,6 +43,16 @@ documents:
       - HANDOFF.md
       - README.md
 
+  - path: _archive/HANDOFF-2026-05.md
+    purpose: Archived historical session log — Wave 7-21 session blocks + reference subsections (Filing-conventions awareness pass, Triage ops trio, Backlog, Pitfalls, Resume-from-clean-state commands, What's in apex-engine today, Engineering decisions worth preserving, File layout, Commands) moved out of the live HANDOFF by /handoff archive in Wave 27.
+    topics: [handoff, archive, history]
+    doc_type: log
+    authority_tier: archived
+    last_updated: 2026-05-27
+    read_this_when:
+      - looking for pre-Wave-22 session detail not captured in git log alone
+      - tracing where a moved reference section went (it's in this archive)
+
   - path: feedback/README.md
     purpose: Cross-instance feedback channel — how apex_report records flow from any project's Claude Code session into apex-engine's GitHub Issues via the local outbox + flush daemon. Documents the JSON schema, privacy rules, and triage rhythm.
     topics: [feedback, mcp, apex_report, github-issues, cross-instance]

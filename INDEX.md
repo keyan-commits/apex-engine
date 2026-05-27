@@ -24,4 +24,10 @@ _Generated from `INDEX.yaml` (the single source of truth). Edit that file to add
 |---|---|---|
 | [`HANDOFF.md`](HANDOFF.md) | What's in flight right now + recent session log. | log |
 
+## Archived
+
+| Doc | Purpose | Type |
+|---|---|---|
+| [`_archive/HANDOFF-2026-05.md`](_archive/HANDOFF-2026-05.md) | Archived historical session log — Wave 7-21 session blocks + reference subsections (Filing-conventions awareness pass, Triage ops trio, Backlog, Pitfalls, Resume-from-clean-state commands, What's in apex-engine today, Engineering decisions worth preserving, File layout, Commands) moved out of the live HANDOFF by /handoff archive in Wave 27. | log |
+
 <!-- END GENERATED INDEX -->
