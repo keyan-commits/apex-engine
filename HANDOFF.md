@@ -2,66 +2,37 @@
 
 > Resume card — read first. Volatile state only; `CLAUDE.md` is stable architecture, git log is the full changelog. No prose restatement of diffs here.
 
-**Updated:** 2026-05-27
+<!-- last_updated: 2026-05-27 -->
 
-## Now — Wave 25: install handoff-init scaffold (PART 3 from setup — opt-in adopted)
+## ⏭️ NOW — 2026-05-27
 
-**Completed:**
-- Ran `/handoff-init` inside apex-engine (non-destructive). 6 helper scripts copied into `scripts/`: `validate_index.py`, `generate_index_md.py`, `check_handoff_fresh.sh`, `memory_lint.py`, `memory_recall.py`, `sync_memory.sh`. Pre-commit hook copied to `scripts/git-hooks/pre-commit`. `.handoff-init` marker (`version: 1`, `initialized: 2026-05-27`) dropped at repo root.
-- **Preserved existing apex post-commit hook.** apex-engine had `.git/hooks/post-commit` (installed by `pnpm qa:install-hooks` — runs qa:check + security:check in background after every commit, surfaces regressions via the feedback channel). Without action, flipping `core.hooksPath` would orphan it. Copied to `scripts/git-hooks/post-commit` BEFORE the flip; both hooks now active under the new hooks path.
-- Seeded `INDEX.yaml` with 1 starter entry (HANDOFF.md) from the kit template; generated `INDEX.md`. Validation: `✓ INDEX.yaml OK — 1 entries, all paths exist, no leaked figures`.
-- Wired `git config core.hooksPath scripts/git-hooks`.
-- HANDOFF.md and pre-existing apex scripts (`qa-check.ts`, `security-check.ts`, etc.) NOT touched.
+**State.** Branch `main` at `adb41c6` (Wave 25 SHA-backfill fixup) + this commit on top. Working tree clean apart from this HANDOFF + `INDEX.yaml`. Resume: `pnpm dev` (http://localhost:3010) · `pnpm mcp:http` · `pnpm qa:check` · `pnpm security:check` · `pnpm test:run`.
 
-**Left undone:**
-- Populate `INDEX.yaml` with the rest of apex's root docs (README.md, CLAUDE.md, feedback/README.md). Reverse-coverage warning is non-blocking but worth tightening.
-- Canonicalize HANDOFF.md heading format from `## Now — Wave NN: ...` to `## ⏭️ NOW — <date>` per the kit's spec (what `check_handoff_fresh.sh` looks for). Recommendation: run `/handoff` once.
+**Shipped today:**
+- **Wave 24** — Factory.ai Missions-inspired HANDOFF schema adopted; bootstrapped `~/Study/claude-handoff` kit (merged `~/.claude/CLAUDE.md` + `/handoff` + `/handoff-init` skills + SessionStart nudge hook). Reconcile diff confirmed the merged CLAUDE.md is a strict superset of the original 9-rule pipeline + Rule 2A scope-tiering + Phase 4.5 DOGFOOD + Rule 9A shape-approval. Post-restart, fully active. (`6b1a21b`)
+- **Wave 25** — `/handoff-init` scaffold installed in apex-engine (PART 3 opt-in). 6 helper scripts + pre-commit hook copied into `scripts/`. **Preserved existing apex post-commit qa hook** by copying it to `scripts/git-hooks/` before flipping `core.hooksPath`. Both hooks now fire under the new hooks path. (`c242a99`)
+- **Wave 26** — this commit: canonicalized HANDOFF top heading from `## Now — Wave NN: ...` to `## ⏭️ NOW — <date>` per the kit's `/handoff` skill format (State / Shipped today / Open next steps / Parked); expanded `INDEX.yaml` from 1 → 4 entries (HANDOFF.md, README.md, CLAUDE.md, feedback/README.md); replaced the Wave-24 Convention footer with a slim pointer to the kit. Clears the per-commit "top block isn't dated today" nudge. (`(SHA-pending)`)
 
-**Commands run:**
-- `git rev-parse --show-toplevel` → `/Users/nikoe/Development/Study/apex-engine`
-- `mkdir -p scripts/git-hooks && cp ~/.claude/skills/handoff-init/scripts/*.{py,sh} scripts/ && cp …/scripts/git-hooks/pre-commit scripts/git-hooks/` → exit 0
-- `cp .git/hooks/post-commit scripts/git-hooks/post-commit` (preserve apex qa hook) → exit 0
-- `python3 scripts/generate_index_md.py` → `INDEX.md regenerated.`
-- `python3 scripts/validate_index.py` → `✓ INDEX.yaml OK — 1 entries`
-- `git config core.hooksPath scripts/git-hooks` → exit 0
-- `git commit` → `c242a99` · `git push` → exit 0
+**Open next steps:**
+1. Verify Production-tier on the `gemini-3.5-flash` candidate (GH #35) before bumping `gemini-2.5-flash` in `providers.ts` + `synthesizer-options.ts` + `TRACKED_MODELS` (catalog-check.ts).
+2. Backlog **12c** — disagreement-driven re-fan-out (~120 LOC; needs 2nd-panel UX).
+3. Backlog **12d** — chain-of-verification lite (~150 LOC; claim extract + footnotes).
+4. `/handoff archive` — move Wave 7-22 + the reference sub-sections (Pitfalls / Engineering decisions / File layout / Commands / `## What's in apex-engine today`) into `_archive/HANDOFF-2026-05.md` to clear the `30 ## blocks live` nudge. HANDOFF is "what's in flight," not a knowledge base — those sections belong in `CLAUDE.md` / specs.
+5. **Opt-in (PART 4):** `/handoff-init` in any other repo to spread the HANDOFF + INDEX pattern.
 
-**Issues discovered (out of scope):** (none — clean scaffold install)
-
-**Validation contract:**
-- [x] All 6 handoff helper scripts present in `scripts/`
-- [x] `scripts/git-hooks/pre-commit` installed (handoff guard)
-- [x] `scripts/git-hooks/post-commit` installed (apex qa, preserved from `.git/hooks/`)
-- [x] `INDEX.yaml` seeded + `INDEX.md` generated + validation passes
-- [x] `core.hooksPath` = `scripts/git-hooks`
-- [x] `.handoff-init` marker present
-- [x] HANDOFF.md preserved (existing content untouched per skill's non-destructive contract)
-- [x] Existing apex post-commit qa hook still fires under the new hooks path
-- [ ] `/handoff` run to canonicalize NOW heading format (deferred — pure formatting, non-blocking)
-- [ ] INDEX.yaml expanded to cover README.md / CLAUDE.md / feedback/README.md (deferred — warning only)
-
-## Next
-
-1. Run `/handoff` once to convert `## Now — Wave NN: ...` headings to the canonical `## ⏭️ NOW — <date>` shape (what `check_handoff_fresh.sh` matches against).
-2. Expand `INDEX.yaml` to cover the other root docs (README.md, CLAUDE.md, feedback/README.md).
-3. Verify Production-tier on the `gemini-3.5-flash` candidate (GH #35) before bumping `gemini-2.5-flash` in `providers.ts` + `synthesizer-options.ts`. Re-check `ai.google.dev/gemini-api/docs/models` first.
-4. Backlog **12c** — disagreement-driven re-fan-out (~120 LOC; needs 2nd-panel UX).
-5. Backlog **12d** — chain-of-verification lite (~150 LOC; claim extract + footnotes).
-6. **Opt-in (PART 4):** `/handoff-init` in any other repo to spread the HANDOFF + INDEX pattern. Reports "already initialized" if re-run.
-
-## Blockers
-
-(none) — all gates clean as of Wave 23 (`d868a36`). Open: LFM-side validation of Waves 19 + 20 (no new signal yet).
-
-## Resume
-
-`pnpm dev` (http://localhost:3010) · `pnpm mcp:http` · `pnpm qa:check` · `pnpm security:check` · `pnpm test:run`
+**Parked:** LFM-side validation of Waves 19 + 20 (no new signal yet — needs the other Mac's CC to surface findings via apex_report).
 
 ---
 
 ## Wave summary
 
 (Past waves preserved below — newest first. Each entry is a one-row table summary, not a prose retelling. Commit SHA is the index into git log for full detail.)
+
+## Wave 25 — install handoff-init scaffold (2026-05-27)
+
+| Wave | What | Commit |
+|---|---|---|
+| 25 | Ran `/handoff-init` (PART 3 opt-in). Non-destructive: 6 helper scripts copied into `scripts/` (`validate_index.py`, `generate_index_md.py`, `check_handoff_fresh.sh`, `memory_lint.py`, `memory_recall.py`, `sync_memory.sh`), pre-commit hook copied to `scripts/git-hooks/pre-commit`, `.handoff-init` marker dropped, `INDEX.yaml` seeded with 1 starter entry, `INDEX.md` generated, `core.hooksPath` set to `scripts/git-hooks`. **Preservation step**: existing `.git/hooks/post-commit` (apex `pnpm qa:install-hooks` gate — runs qa:check + security:check in background) copied to `scripts/git-hooks/post-commit` BEFORE the `core.hooksPath` flip; both hooks now active. HANDOFF.md preserved (existing content untouched per skill's non-destructive contract). Single SHA-backfill fixup `adb41c6`. | `c242a99` |
 
 ## Wave 24 — adopt structured HANDOFF schema (Factory.ai Missions) (2026-05-28)
 
@@ -489,18 +460,12 @@ pnpm mcp               # run MCP server directly
 
 ## Convention
 
-**Per-wave shape.** STANDARD / LARGE waves get the full 5-field block at `## Now`:
+apex-engine follows the shared `claude-handoff` convention. Source of truth:
 
-- **Completed** — concrete artifacts (files / functions / behaviors), not prose summary.
-- **Left undone** — explicit deferrals + reason. `(none)` is a valid value.
-- **Commands run** — what was actually invoked + exit codes (incl. `git commit → <SHA>` and `git push → 0`). Makes the SHA an explicit recorded output, retiring the "patch Wave NN commit SHA" fixup-commit pattern.
-- **Issues discovered (out of scope)** — anything surfaced during the work the next agent should know about, even if out of scope here. `(none)` is valid.
-- **Validation contract** — checklist of acceptance assertions. Tick what held; carry deferred ones forward to the next wave.
+- **`~/.claude/CLAUDE.md`** (symlinked to `~/Study/claude-handoff/assets/CLAUDE.md`) — global Part A (HANDOFF + INDEX cadence) + Part B (agentic workflow rules incl. Rule 2A scope-tiering, Phase 4.5 DOGFOOD, Rule 9A shape-approval).
+- **`~/.claude/skills/handoff/SKILL.md`** — exact format of the `## ⏭️ NOW` block (State / Shipped today / Open next steps / Parked), plus the `/handoff archive` procedure.
+- **`~/.claude/skills/handoff-init/SKILL.md`** — repo scaffolding (pre-commit hook + INDEX tooling + `.handoff-init` marker).
 
-**TINY waves** (typo fix, one-line config bump, doc-comment touch-up) collapse to a compact one-liner + the SHA. Don't emit `(none)` in three fields for a 20-LOC wave. Tiering matches `~/.claude/CLAUDE.md` Rule 2A (TINY <150 LOC same-area / STANDARD 150-500 LOC or cross-module / LARGE >500 LOC).
+Run `/handoff` at milestones to refresh the NOW block. The pre-commit hook (installed by Wave 25) enforces that every commit touches `HANDOFF.md`; bypass once with `git commit --no-verify`, disable per-repo with `git config handoff.requireOnCommit false`.
 
-**Cadence.** Task done → write the structured `## Now` block → commit (the work + `HANDOFF.md` together) → push. On a new wave: collapse the previous `## Now` into a one-row entry in the matching Wave summary table, then write the new wave's block at the top.
-
-**SHA backfill.** Write `(SHA-pending)` on the wave commit. Replace via `git commit --amend` if unpushed OR a single fixup commit if pushed. Never a trail of "patch Wave NN SHA" commits — `Commands run: git commit → <SHA>` makes the backfill automatic.
-
-— Schema adopted 2026-05-28 from the Factory.ai Missions architecture (Luke Alvoeiro's talk: https://www.youtube.com/watch?v=ow1we5PzK-o). The shared kit lives at `~/Study/claude-handoff` and the per-repo `/handoff` + `/handoff-init` skills automate this convention.
+Schema adopted 2026-05-28 (Wave 24, Factory.ai Missions inspiration: https://www.youtube.com/watch?v=ow1we5PzK-o); canonicalized to the kit's `/handoff` format in Wave 26 (2026-05-27).

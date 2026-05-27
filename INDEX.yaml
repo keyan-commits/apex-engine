@@ -21,3 +21,35 @@ documents:
     last_updated: 2026-05-27
     read_this_when:
       - resuming work — read the top NOW block first
+
+  - path: README.md
+    purpose: Public-facing overview — what apex-engine is, install, MCP setup, commands, API keys, roles & ensembles, filing-conventions.
+    topics: [overview, setup, mcp, install, public]
+    doc_type: guide
+    authority_tier: reference
+    last_updated: 2026-05-27
+    read_this_when:
+      - onboarding a new user / contributor
+      - looking up install / setup commands
+      - locating the canonical tool list (16 MCP tools)
+
+  - path: CLAUDE.md
+    purpose: Project-local architecture + engineering standards for Claude Code sessions working in apex-engine. Stable; this is "what we are," not "what's in flight" (that's HANDOFF.md).
+    topics: [architecture, standards, claude-code, mcp]
+    doc_type: specification
+    authority_tier: authoritative
+    last_updated: 2026-05-27
+    related_files:
+      - HANDOFF.md
+      - README.md
+
+  - path: feedback/README.md
+    purpose: Cross-instance feedback channel — how apex_report records flow from any project's Claude Code session into apex-engine's GitHub Issues via the local outbox + flush daemon. Documents the JSON schema, privacy rules, and triage rhythm.
+    topics: [feedback, mcp, apex_report, github-issues, cross-instance]
+    doc_type: specification
+    authority_tier: authoritative
+    last_updated: 2026-05-27
+    read_this_when:
+      - filing feedback against apex-engine from another project
+      - debugging why a feedback record didn't reach GitHub
+      - reviewing what data flows in an apex_report payload
